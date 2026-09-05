@@ -8,6 +8,9 @@ import {
   getSourceFilePath,
   getSourcesByStudent,
   getSourceContent,
+  chatWithSourceService,
+  triggerSourceAIActionService,
+  saveSourceNotesService,
 } from "../services/source_service";
 
 export const getSourceContentController = async (
@@ -293,3 +296,113 @@ export const deleteSourceController = async (
     });
   }
 };
+
+export const chatWithSourceController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const sourceId = Array.isArray(req.params.sourceId)
+      ? req.params.sourceId[0]
+      : req.params.sourceId;
+
+    const { query, message, history } = req.body;
+    const promptText = query || message;
+
+    if (!promptText || typeof promptText !== "string" || !promptText.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "Question or message is required",
+      });
+      return;
+    }
+
+    const result = await chatWithSourceService(
+      sourceId,
+      promptText.trim(),
+      history || []
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to chat with source";
+
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const generateSourceAIActionController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const sourceId = Array.isArray(req.params.sourceId)
+      ? req.params.sourceId[0]
+      : req.params.sourceId;
+
+    const { action, options } = req.body;
+
+    if (!action || typeof action !== "string") {
+      res.status(400).json({
+        success: false,
+        message:
+          "AI action name is required (e.g. quiz, flashcard, mindmap, summary, notes, chapter, analyse, timeline, audio, video)",
+      });
+      return;
+    }
+
+    const result = await triggerSourceAIActionService(
+      sourceId,
+      action,
+      options
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to execute AI action";
+
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const saveSourceNotesController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const sourceId = Array.isArray(req.params.sourceId)
+      ? req.params.sourceId[0]
+      : req.params.sourceId;
+
+    const { notes } = req.body;
+
+    const result = await saveSourceNotesService(sourceId, notes || "");
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to save source notes";
+
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};

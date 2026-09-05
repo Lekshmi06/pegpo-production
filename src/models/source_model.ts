@@ -8,6 +8,17 @@ export type SourceStatus =
   | "ready"
   | "failed";
 
+export type AIStatus = "pending" | "processing" | "ready" | "failed";
+
+export interface ISourceOverview {
+  summary: string;
+  difficulty: "Beginner" | "Intermediate" | "Advanced";
+  readingTimeMinutes: number;
+  wordCount: number;
+  keyConcepts: string[];
+  suggestedQuestions: string[];
+}
+
 export interface ISource extends Document {
   studentId: mongoose.Types.ObjectId;
 
@@ -21,6 +32,10 @@ export interface ISource extends Document {
   storagePath: string;
 
   status: SourceStatus;
+
+  aiReady: boolean;
+  aiStatus: AIStatus;
+  aiOverview?: ISourceOverview;
 
   createdAt: Date;
   updatedAt: Date;
@@ -72,6 +87,26 @@ const sourceSchema = new Schema<ISource>(
       enum: ["uploaded", "processing", "ready", "failed"],
       default: "uploaded",
       required: true,
+    },
+
+    aiReady: {
+      type: Boolean,
+      default: false,
+    },
+
+    aiStatus: {
+      type: String,
+      enum: ["pending", "processing", "ready", "failed"],
+      default: "pending",
+    },
+
+    aiOverview: {
+      summary: { type: String },
+      difficulty: { type: String, enum: ["Beginner", "Intermediate", "Advanced"] },
+      readingTimeMinutes: { type: Number },
+      wordCount: { type: Number },
+      keyConcepts: [{ type: String }],
+      suggestedQuestions: [{ type: String }],
     },
   },
   {

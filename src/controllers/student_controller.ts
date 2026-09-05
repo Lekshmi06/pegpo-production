@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import {
   createStudent,
   getStudentById,
+  getStudentByEmail,
   updateStudent,
   UpdateStudentData,
 } from "../services/student_service";
@@ -112,7 +113,54 @@ export const createStudentController = async (
       error instanceof Error ? error.message : "Failed to create student";
 
     if (message.includes("already exists")) {
+      const existingProfile = req.body?.email
+        ? await getStudentByEmail(req.body.email).catch(() => null)
+        : null;
+
       res.status(409).json({
+        success: false,
+        message,
+        data: existingProfile ? { studentProfile: existingProfile } : undefined,
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const getStudentByEmailController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const email = Array.isArray(req.params.email)
+      ? req.params.email[0]
+      : req.params.email;
+
+    if (!email) {
+      res.status(400).json({
+        success: false,
+        message: "Email parameter is required",
+      });
+      return;
+    }
+
+    const student = await getStudentByEmail(email);
+
+    res.status(200).json({
+      success: true,
+      data: student,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch student";
+
+    if (message === "Student not found") {
+      res.status(404).json({
         success: false,
         message,
       });

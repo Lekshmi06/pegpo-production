@@ -9,9 +9,10 @@ import {
   getSourceContentController,
   downloadSourceController,
   deleteSourceController,
+  chatWithSourceController,
+  generateSourceAIActionController,
+  saveSourceNotesController,
 } from "../controllers/source_controller";
-
-
 
 const router = Router();
 
@@ -44,6 +45,22 @@ router.get(
 router.delete(
   "/sources/:sourceId",
   deleteSourceController
+);
+
+// AI-powered endpoints
+router.post(
+  "/sources/:sourceId/ai/chat",
+  chatWithSourceController
+);
+
+router.post(
+  "/sources/:sourceId/ai/action",
+  generateSourceAIActionController
+);
+
+router.put(
+  "/sources/:sourceId/notes",
+  saveSourceNotesController
 );
 
 export default router;

@@ -92,6 +92,28 @@ export const getStudentById = async (studentProfileId: string) => {
   return studentProfile;
 };
 
+export const getStudentByEmail = async (email: string) => {
+  const user = await User.findOne({
+    email: email.toLowerCase(),
+  });
+
+  if (!user) {
+    throw new Error("Student not found");
+  }
+
+  const studentProfile = await StudentProfile.findOne({
+    userId: user._id,
+  })
+    .populate("userId", "email userType language")
+    .lean();
+
+  if (!studentProfile) {
+    throw new Error("Student not found");
+  }
+
+  return studentProfile;
+};
+
 export const updateStudent = async (
   studentProfileId: string,
   data: UpdateStudentData
