@@ -4,7 +4,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/server.ts",
+    "seed:tests": "tsx src/config/seed_tests.ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

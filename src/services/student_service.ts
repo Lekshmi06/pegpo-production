@@ -27,7 +27,11 @@ interface CreateStudentData {
 export interface UpdateStudentData {
   name?: string;
   phone?: string;
+  dob?: string;
+  gender?: string;
+  avatar?: string;
   goal?: string;
+  learningPath?: string;
   language?: string;
 
   education?: {
@@ -42,6 +46,17 @@ export interface UpdateStudentData {
     degree?: string;
     specialization?: string;
     institution?: string;
+  };
+
+  schoolDetails?: {
+    schoolName?: string;
+    board?: string;
+    classLevel?: string;
+    studyMode?: string;
+    selectedSubject?: string;
+    customSubject?: string;
+    syllabusFileName?: string;
+    textbookFileName?: string;
   };
 }
 
@@ -128,12 +143,32 @@ export const updateStudent = async (
     studentUpdate.phone = data.phone;
   }
 
+  if (data.dob !== undefined) {
+    studentUpdate.dob = data.dob;
+  }
+
+  if (data.gender !== undefined) {
+    studentUpdate.gender = data.gender;
+  }
+
+  if (data.avatar !== undefined) {
+    studentUpdate.avatar = data.avatar;
+  }
+
   if (data.goal !== undefined) {
     studentUpdate.goal = data.goal;
   }
 
+  if (data.learningPath !== undefined) {
+    studentUpdate.learningPath = data.learningPath;
+  }
+
   if (data.education !== undefined) {
     studentUpdate.education = data.education;
+  }
+
+  if (data.schoolDetails !== undefined) {
+    studentUpdate.schoolDetails = data.schoolDetails;
   }
 
   // First confirm that the student profile exists.

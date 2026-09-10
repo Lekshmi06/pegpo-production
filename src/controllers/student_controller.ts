@@ -16,7 +16,18 @@ const educationLevels = [
   "other",
 ] as const;
 
-const updateableFields = ["name", "phone", "goal", "education", "language"];
+const updateableFields = [
+  "name",
+  "phone",
+  "dob",
+  "gender",
+  "avatar",
+  "goal",
+  "learningPath",
+  "education",
+  "schoolDetails",
+  "language",
+];
 const educationFields = [
   "level",
   "board",
@@ -45,7 +56,16 @@ const validateUpdateData = (body: unknown): string | null => {
     return `Field '${invalidField}' cannot be updated`;
   }
 
-  for (const field of ["name", "phone", "goal", "language"]) {
+  for (const field of [
+    "name",
+    "phone",
+    "dob",
+    "gender",
+    "avatar",
+    "goal",
+    "learningPath",
+    "language",
+  ]) {
     if (data[field] !== undefined && typeof data[field] !== "string") {
       return `Field '${field}' must be a string`;
     }

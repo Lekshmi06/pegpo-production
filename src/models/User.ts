@@ -10,6 +10,8 @@ export type UserRole =
 
 export interface IUser extends Document {
   email: string;
+  password?: string;
+  name?: string;
   userType: UserRole;
   language?: string;
   createdAt: Date;
@@ -26,9 +28,21 @@ const userSchema = new Schema<IUser>(
       lowercase: true,
     },
 
+    password: {
+      type: String,
+      required: false, // optional on model so legacy documents without password don't crash
+      trim: true,
+    },
+
+    name: {
+      type: String,
+      trim: true,
+    },
+
     userType: {
       type: String,
       required: true,
+      default: "student",
       enum: [
         "student",
         "teacher",
@@ -42,6 +56,7 @@ const userSchema = new Schema<IUser>(
     language: {
       type: String,
       trim: true,
+      default: "English",
     },
   },
   {
