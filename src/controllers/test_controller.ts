@@ -7,6 +7,10 @@ import {
   getAttemptAnalysis,
   getStudentAttemptHistory,
 } from "../services/test_service";
+import { resolveAcademicContext } from "../services/academic_context_service";
+import { getRelevantStudentMaterial } from "../services/student_material_service";
+import { generateUniversalQuestions } from "../services/ai_question_generator";
+import { createTestFromQuestions } from "../services/test_adapter";
 
 export const getTestsController = async (
   req: Request,
@@ -235,3 +239,103 @@ export const getStudentHistoryController = async (
     });
   }
 };
+
+export const generateTestController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    if (!req.studentProfile || !req.user) {
+      res.status(401).json({
+        success: false,
+        message: "Authenticated student profile required to generate test",
+      });
+      return;
+    }
+
+    const { subject, questionCount, difficulty, topic } = req.body || {};
+
+    // 1. Resolve student's verified academic context (server-side, never trusting client for board/class)
+    const context = resolveAcademicContext(req.studentProfile, req.user);
+    if (subject && typeof subject === "string" && subject.trim().length > 0) {
+      context.selectedSubject = subject.trim();
+    }
+
+    // 2. Retrieve student's own uploaded learning material (enforces student isolation)
+    const materialResult = await getRelevantStudentMaterial({
+      studentProfileId: context.studentProfileId,
+      subject: context.selectedSubject,
+      textbookFileName: context.textbookFileName,
+      topic: typeof topic === "string" ? topic.trim() : undefined,
+    });
+
+    // 3. Generate questions using AIQuestionGenerator grounded in student material
+    const targetCount =
+      typeof questionCount === "number" && questionCount > 0 && questionCount <= 25
+        ? Math.min(25, questionCount)
+        : 10;
+
+    const targetDifficulty =
+      difficulty === "easy" || difficulty === "medium" || difficulty === "hard"
+        ? difficulty
+        : "mixed";
+
+    const questions = await generateUniversalQuestions({
+      context,
+      materialText: materialResult.hasMaterial ? materialResult.textSample : undefined,
+      materialName: materialResult.originalName,
+      questionCount: targetCount,
+      difficulty: targetDifficulty,
+      topic: typeof topic === "string" ? topic.trim() : undefined,
+      mode: "test",
+    });
+
+    if (!questions || questions.length === 0) {
+      res.status(500).json({
+        success: false,
+        message: "Failed to generate questions for the requested subject.",
+      });
+      return;
+    }
+
+    // 4. Adapt questions into persistent Test and Question documents in MongoDB
+    const testDoc = await createTestFromQuestions({
+      context,
+      questions,
+      materialInfo: materialResult.hasMaterial
+        ? {
+            sourceId: materialResult.sourceId,
+            originalName: materialResult.originalName,
+          }
+        : undefined,
+      topic: typeof topic === "string" ? topic.trim() : undefined,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "AI Test generated successfully from student learning material",
+      data: {
+        testId: testDoc._id,
+        title: testDoc.title,
+        subject: testDoc.subject,
+        board: testDoc.board,
+        classLevel: testDoc.classLevel,
+        durationMinutes: testDoc.durationMinutes,
+        totalMarks: testDoc.totalMarks,
+        questionCount: testDoc.questions.length,
+        sourceType: testDoc.sourceType,
+        materialUsed: materialResult.hasMaterial
+          ? materialResult.originalName
+          : "Standard Curriculum Knowledge",
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to generate test";
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};
+

@@ -6,7 +6,8 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "seed:tests": "tsx src/config/seed_tests.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:generate": "tsx src/config/verify_generate_test.ts"
   },
   "keywords": [],
   "author": "",

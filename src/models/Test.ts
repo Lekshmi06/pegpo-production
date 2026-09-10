@@ -14,6 +14,12 @@ export interface ITest extends Document {
   category: string;
   questions: mongoose.Types.ObjectId[];
   status: "draft" | "published" | "archived";
+  sourceType?: "curriculum" | "ai_generated" | "teacher" | "system";
+  studentProfileId?: mongoose.Types.ObjectId;
+  createdBy?: mongoose.Types.ObjectId;
+  sourceId?: mongoose.Types.ObjectId;
+  topic?: string;
+  chapter?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +87,32 @@ const testSchema = new Schema<ITest>(
       type: String,
       enum: ["draft", "published", "archived"],
       default: "published",
+    },
+    sourceType: {
+      type: String,
+      enum: ["curriculum", "ai_generated", "teacher", "system"],
+      default: "curriculum",
+    },
+    studentProfileId: {
+      type: Schema.Types.ObjectId,
+      ref: "StudentProfile",
+      index: true,
+    },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    sourceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Source",
+    },
+    topic: {
+      type: String,
+      trim: true,
+    },
+    chapter: {
+      type: String,
+      trim: true,
     },
   },
   {

@@ -6,6 +6,7 @@ import {
   submitTestAttemptController,
   getAttemptAnalysisController,
   getStudentHistoryController,
+  generateTestController,
 } from "../controllers/test_controller";
 import {
   authenticateStudent,
@@ -18,11 +19,14 @@ const router = Router();
 router.get("/attempts/my-history", authenticateStudent, getStudentHistoryController);
 router.get("/attempts/:attemptId", authenticateStudent, getAttemptAnalysisController);
 
-// 2. Test Catalog routes
+// 2. AI Test Generation route (must precede /:testId parameterized route)
+router.post("/generate", authenticateStudent, generateTestController);
+
+// 3. Test Catalog routes
 router.get("/", optionalAuthenticateStudent, getTestsController);
 router.get("/:testId", optionalAuthenticateStudent, getTestByIdController);
 
-// 3. Test Session & Submission routes
+// 4. Test Session & Submission routes
 router.post("/:testId/start", authenticateStudent, startTestAttemptController);
 router.post("/:testId/submit", authenticateStudent, submitTestAttemptController);
 

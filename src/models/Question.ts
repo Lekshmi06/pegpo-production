@@ -17,6 +17,11 @@ export interface IQuestion extends Document {
   subject?: string;
   board?: string;
   classLevel?: string;
+  hint?: string;
+  difficulty?: "Easy" | "Medium" | "Hard";
+  topic?: string;
+  chapter?: string;
+  stepByStepSolution?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -93,6 +98,27 @@ const questionSchema = new Schema<IQuestion>(
       type: String,
       trim: true,
       default: "Class 10",
+    },
+    hint: {
+      type: String,
+      trim: true,
+    },
+    difficulty: {
+      type: String,
+      enum: ["Easy", "Medium", "Hard"],
+      default: "Medium",
+    },
+    topic: {
+      type: String,
+      trim: true,
+    },
+    chapter: {
+      type: String,
+      trim: true,
+    },
+    stepByStepSolution: {
+      type: [String],
+      default: [],
     },
   },
   {
