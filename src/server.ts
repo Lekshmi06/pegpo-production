@@ -6,6 +6,7 @@ import studentRoutes from "./routes/student_routes";
 import sourceRoutes from "./routes/source_routes";
 import authRoutes from "./routes/auth_routes";
 import testRoutes from "./routes/test_routes";
+import aiRoutes from "./routes/ai_routes";
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/tests", testRoutes);
+app.use("/api/ai", aiRoutes);
 app.use("/api", sourceRoutes);
 
 app.get("/", (req, res) => {

@@ -8,6 +8,7 @@ export interface ITest extends Document {
   board: string;
   classLevel: string;
   durationMinutes: number;
+  isUntimed?: boolean;
   totalMarks: number;
   passingMarks: number;
   isLocked: boolean;
@@ -58,7 +59,11 @@ const testSchema = new Schema<ITest>(
       type: Number,
       required: true,
       default: 15,
-      min: 1,
+      min: 0,
+    },
+    isUntimed: {
+      type: Boolean,
+      default: false,
     },
     totalMarks: {
       type: Number,
