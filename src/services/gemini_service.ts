@@ -4,7 +4,7 @@ const apiKey = process.env.GEMINI_API_KEY || "";
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 // Preferred model for fast, high-quality document intelligence
-const DEFAULT_MODEL = "gemini-3.6-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
 
 export interface DocumentUnderstandingResult {
   summary: string;

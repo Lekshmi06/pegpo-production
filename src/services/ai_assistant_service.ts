@@ -8,7 +8,74 @@ import { TEST_CONFIG, resolveQuestionCount } from "../config/test_config";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.6-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
+const CANDIDATE_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+];
+
+export interface GeminiGenerateResult {
+  text: string;
+  isQuotaExhausted: boolean;
+  quotaMessage?: string;
+}
+
+/**
+ * Robust caller that tries multiple candidate Gemini models sequentially upon rate limits or errors.
+ */
+async function callGeminiGenerate(prompt: string): Promise<GeminiGenerateResult> {
+  if (!ai) {
+    return {
+      text: "",
+      isQuotaExhausted: true,
+      quotaMessage: "Gemini AI API key is not configured or missing.",
+    };
+  }
+
+  let lastError: any = null;
+  let quotaExhaustedEncountered = false;
+
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+      });
+      const text = response.text || "";
+      if (text.trim().length > 0) {
+        return { text: text.trim(), isQuotaExhausted: false };
+      }
+    } catch (err: any) {
+      lastError = err;
+      const errStr = String(err?.message || "") + " " + String(err?.status || "");
+      const isQuota =
+        err?.status === 429 ||
+        errStr.includes("429") ||
+        errStr.includes("Quota exceeded") ||
+        errStr.includes("RESOURCE_EXHAUSTED") ||
+        errStr.includes("rate limit");
+      if (isQuota) {
+        quotaExhaustedEncountered = true;
+      }
+      console.warn(`[callGeminiGenerate] Model ${model} failed (${err?.status || err?.message?.slice(0, 100)}), trying next candidate...`);
+      continue;
+    }
+  }
+
+  if (lastError) {
+    console.warn("[callGeminiGenerate] All candidate models failed:", lastError?.message || lastError);
+  }
+
+  return {
+    text: "",
+    isQuotaExhausted: quotaExhaustedEncountered,
+    quotaMessage: quotaExhaustedEncountered
+      ? "AI rate limit or daily request quota was reached. Showing offline curriculum explanation."
+      : undefined,
+  };
+}
 
 export interface PYQQuestionPayload {
   testId: string;
@@ -55,6 +122,8 @@ export interface AIChatResponse {
   pyq?: PYQQuestionPayload;
   isQuestionSet?: boolean;
   questionSet?: QuestionSetPayload;
+  isQuotaExhausted?: boolean;
+  quotaMessage?: string;
 }
 
 export interface AIChatParams {
@@ -578,12 +647,8 @@ Return ONLY a valid JSON object (no markdown, no backticks):
 }`;
 
     try {
-      const response = await ai.models.generateContent({
-        model: DEFAULT_MODEL,
-        contents: prompt,
-      });
-
-      const raw = response.text || "";
+      const geminiRes = await callGeminiGenerate(prompt);
+      const raw = geminiRes.text;
       const parsed = JSON.parse(cleanJsonString(raw));
 
       if (
@@ -1040,12 +1105,8 @@ Return ONLY a valid JSON array of ${count} objects (no markdown, no backticks, n
 ]`;
 
     try {
-      const response = await ai.models.generateContent({
-        model: DEFAULT_MODEL,
-        contents: prompt,
-      });
-
-      const raw = response.text || "";
+      const geminiRes = await callGeminiGenerate(prompt);
+      const raw = geminiRes.text;
       const parsed = JSON.parse(cleanJsonString(raw));
 
       if (Array.isArray(parsed) && parsed.length > 0) {
@@ -1104,11 +1165,8 @@ Return ONLY a valid JSON array of ${missing} objects (no markdown, no backticks,
 ]`;
 
       try {
-        const retryResponse = await ai.models.generateContent({
-          model: DEFAULT_MODEL,
-          contents: retryPrompt,
-        });
-        const raw = retryResponse.text || "";
+        const retryRes = await callGeminiGenerate(retryPrompt);
+        const raw = retryRes.text;
         const parsed = JSON.parse(cleanJsonString(raw));
         if (Array.isArray(parsed)) {
           for (const item of parsed) {
@@ -1383,31 +1441,44 @@ STUDENT QUERY: "${message}"
 CURRENT ACADEMIC SECTION: "${contextTitle || "General Curriculum"}"
 
 INSTRUCTIONS:
-- Give a direct, crystal-clear, pedagogically sound answer.
-- Highlight core principles, formulas, or key definitions in bold.
-- Use clean bullet points or numbered steps where helpful.
+- Give a direct, crystal-clear, pedagogically sound, and thorough answer explaining the concept.
+- Define the concept clearly in simple, engaging terms.
+- Highlight core principles, laws, formulas, or key definitions in bold.
+- Break down key concepts with clean bullet points or numbered steps.
+- Provide intuitive real-world examples or analogies.
 - Suggest a quick follow-up practice action (e.g. asking for a specific PYQ or related concept).
 - DO NOT output any URL paths, web routes (like /student/tests), or technical system tokens.
 - Keep tone encouraging, energetic, and professional.`;
 
-      try {
-        const response = await ai.models.generateContent({
-          model: DEFAULT_MODEL,
-          contents: prompt,
-        });
+      let quotaHit = false;
+      let quotaHitMsg: string | undefined;
 
-        const reply = response.text?.trim() || "";
-        if (reply) {
-          return { reply, intent: "CONCEPT_EXPLANATION" };
+      try {
+        const geminiRes = await callGeminiGenerate(prompt);
+        if (geminiRes.text && geminiRes.text.trim().length > 0) {
+          return { reply: geminiRes.text.trim(), intent: "CONCEPT_EXPLANATION" };
+        }
+        if (geminiRes.isQuotaExhausted) {
+          quotaHit = true;
+          quotaHitMsg = geminiRes.quotaMessage;
         }
       } catch (err) {
         console.warn("Gemini academic chat error, falling back to smart educational engine:", err);
       }
+
+      return {
+        reply: generateAcademicExplanation(message, studentBoard, studentClass),
+        intent: "CONCEPT_EXPLANATION",
+        isQuotaExhausted: quotaHit || !ai,
+        quotaMessage: quotaHitMsg || (ai ? "AI rate limit or daily request quota reached. Providing verified offline curriculum response." : "AI engine is offline."),
+      };
     }
 
     return {
       reply: generateAcademicExplanation(message, studentBoard, studentClass),
       intent: "CONCEPT_EXPLANATION",
+      isQuotaExhausted: true,
+      quotaMessage: "AI engine is not configured or in offline mode.",
     };
   }
 
@@ -1417,8 +1488,31 @@ INSTRUCTIONS:
     return { reply: conversationalReply, intent: "CASUAL" };
   }
 
+  if (ai) {
+    try {
+      const casualPrompt = `You are EduPye AI, a friendly, encouraging, knowledgeable academic companion for students.
+The student said: "${message}"
+${studentName ? `The student's name is ${studentName}.` : ""}
+Provide a helpful, warm, natural response. If their query is study-related, offer to help explain concepts or practice questions. Keep it brief and engaging.`;
+      const geminiRes = await callGeminiGenerate(casualPrompt);
+      if (geminiRes.text && geminiRes.text.trim().length > 0) {
+        return { reply: geminiRes.text.trim(), intent: "CASUAL" };
+      }
+      if (geminiRes.isQuotaExhausted) {
+        return {
+          reply: `Hello${studentName ? ` ${studentName}` : ""}! I'm here as your academic companion. The AI daily usage limit was reached, but you can still explore all our verified offline syllabus concepts and practice questions!`,
+          intent: "CASUAL",
+          isQuotaExhausted: true,
+          quotaMessage: geminiRes.quotaMessage,
+        };
+      }
+    } catch (err) {
+      console.warn("Gemini casual chat error:", err);
+    }
+  }
+
   return {
-    reply: `Hello${studentName ? ` ${studentName}` : ""}! I'm here as your academic companion. You can ask me to explain any concept, provide practice questions on any topic (like *"provide me questions about double displacement reaction"*), or practice Previous Year Questions! What would you like to explore?`,
+    reply: `Hello${studentName ? ` ${studentName}` : ""}! I'm here as your academic companion. You can ask me to explain any concept, provide practice questions on any topic, or practice Previous Year Questions! What would you like to explore?`,
     intent: "CASUAL",
   };
 }
@@ -1772,32 +1866,174 @@ $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
 - If $D < 0$: **No real roots** (complex roots).`;
   }
 
-  // === DEFAULT SMART ACADEMIC EXPLAINER ===
+  // === THERMODYNAMICS ===
+  if (
+    q.includes("thermodynamics") ||
+    q.includes("thermodynamic") ||
+    (q.includes("heat") && q.includes("work") && q.includes("energy"))
+  ) {
+    return `### 🌡️ Understanding Thermodynamics
+
+**Thermodynamics** (from Greek *therme* "heat" and *dynamis* "power") is the branch of physics and physical chemistry that studies **heat, temperature, work, and energy**, and the fundamental laws governing how thermal energy is transformed into other energy forms.
+
+---
+
+### 🏛️ The Four Fundamental Laws of Thermodynamics:
+
+1. **Zeroth Law (Thermal Equilibrium & Temperature)**:
+   - If two systems $A$ and $B$ are in thermal equilibrium with a third system $C$, then $A$ and $B$ are in thermal equilibrium with each other ($T_A = T_B$).
+   - This law provides the physical basis for defining and measuring temperature using thermometers.
+
+2. **First Law (Law of Conservation of Energy)**:
+   - Energy can neither be created nor destroyed; it can only be transformed from one form to another.
+   - For any closed system:
+     $$\\Delta U = Q - W$$
+     *(where $\\Delta U$ is the change in internal energy, $Q$ is heat added to the system, and $W$ is the work done by the system).*
+
+3. **Second Law (The Entropy Principle & Direction of Heat Flow)**:
+   - The total **entropy** ($S$, molecular disorder/randomness) of an isolated system always increases in any spontaneous natural process ($\\Delta S_{\\text{universe}} \\ge 0$).
+   - **Clausius Statement**: Heat cannot spontaneously transfer from a cooler body to a hotter body without an external input of work.
+   - **Kelvin-Planck Statement**: No heat engine can be $100\\%$ efficient; it is impossible to absorb heat from a reservoir and convert it completely into work without rejecting waste heat to a cold sink.
+
+4. **Third Law (Absolute Zero Entropy)**:
+   - As the temperature of a pure, perfectly ordered crystal approaches **Absolute Zero ($0\\text{ K}$ or $-273.15^\\circ\\text{C}$)**, its entropy approaches a constant minimum value (zero).
+
+---
+
+### ⚙️ Core Concepts & State Variables:
+- **System Types**:
+  - **Open System**: Exchanges both energy and matter with its surroundings (e.g. boiling water in an open beaker).
+  - **Closed System**: Exchanges energy but NOT matter (e.g. gas sealed in a cylinder with a piston).
+  - **Isolated System**: Exchanges neither energy nor matter (e.g. an ideal thermos flask).
+- **Thermodynamic Variables**: Pressure ($P$), Volume ($V$), Temperature ($T$), Internal Energy ($U$), Enthalpy ($H$), Entropy ($S$), and Gibbs Free Energy ($G$).
+
+---
+
+### 🚀 Real-World Applications:
+- **Heat Engines & Automobiles**: Internal combustion engines convert heat from fuel combustion into mechanical work to propel vehicles.
+- **Refrigerators & Air Conditioners**: Compressors consume electrical work to pump heat out of an enclosed cold space into a warmer environment.
+- **Power Generation**: Steam turbines in thermal and nuclear power plants transform heat energy into electrical power.
+
+Would you like to solve a board practice question or explore the **First Law ($\\Delta U = Q - W$)** in more detail?`;
+  }
+
+  // === CHEMICAL REACTIONS & EQUATIONS ===
+  if (
+    q.includes("chemical reaction") ||
+    q.includes("displacement reaction") ||
+    q.includes("double displacement") ||
+    q.includes("redox")
+  ) {
+    return `### 🧪 Chemical Reactions & Key Types
+
+A **Chemical Reaction** is a process in which one or more substances (reactants) undergo chemical transformation to form new substances (products) with distinct properties.
+
+---
+
+### 🔬 Major Types of Chemical Reactions:
+1. **Combination Reaction**: Two or more reactants combine to form a single product:
+   $$A + B \\rightarrow AB \\quad (\\text{e.g. } \\text{CaO} + \\text{H}_2\\text{O} \\rightarrow \\text{Ca(OH)}_2 + \\text{Heat})$$
+2. **Decomposition Reaction**: A single compound breaks down into two or more simpler substances:
+   $$2\\text{FeSO}_4 \\xrightarrow{\\Delta} \\text{Fe}_2\\text{O}_3 + \\text{SO}_2 + \\text{SO}_3$$
+3. **Single Displacement Reaction**: A more reactive metal displaces a less reactive metal from its aqueous salt solution:
+   $$\\text{Fe(s)} + \\text{CuSO}_4\\text{(aq)} \\rightarrow \\text{FeSO}_4\\text{(aq)} + \\text{Cu(s)}$$
+4. **Double Displacement (Precipitation) Reaction**: Mutual exchange of ions between two aqueous compounds:
+   $$\\text{Na}_2\\text{SO}_4\\text{(aq)} + \\text{BaCl}_2\\text{(aq)} \\rightarrow \\text{BaSO}_4\\downarrow\\text{(white ppt)} + 2\\text{NaCl(aq)}$$
+5. **Redox (Oxidation-Reduction) Reaction**: Simultaneous oxidation (loss of electrons / gain of oxygen) and reduction (gain of electrons / loss of oxygen):
+   $$\\text{CuO} + \\text{H}_2 \\xrightarrow{\\Delta} \\text{Cu} + \\text{H}_2\\text{O}$$`;
+  }
+
+  // === ACIDS, BASES & SALTS ===
+  if (q.includes("acid") && (q.includes("base") || q.includes("salt") || q.includes("ph"))) {
+    return `### ⚗️ Acids, Bases, and Salts
+
+#### 1. Acids:
+- Produce hydrogen ions ($\\text{H}^+$ or $\\text{H}_3\\text{O}^+$) in aqueous solution.
+- Turn blue litmus paper red; sour in taste; $\\text{pH} < 7$.
+
+#### 2. Bases:
+- Produce hydroxide ions ($\\text{OH}^-$) in aqueous solution.
+- Turn red litmus paper blue; bitter in taste; soapy to touch; $\\text{pH} > 7$.
+
+#### 3. The pH Scale:
+$$\\text{pH} = -\\log_{10}[\\text{H}^+]$$
+- $\\text{pH} = 7$: Neutral (pure water at $25^\\circ\\text{C}$).
+- $\\text{pH} < 7$: Acidic (lower pH = stronger acid, e.g., gastric juice $\\approx 1.2$).
+- $\\text{pH} > 7$: Basic / Alkaline (higher pH = stronger base, e.g., $1\\text{M NaOH} = 14$).
+
+#### 4. Neutralization Reaction:
+$$\\text{Acid} + \\text{Base} \\rightarrow \\text{Salt} + \\text{Water} \\quad (\\text{HCl} + \\text{NaOH} \\rightarrow \\text{NaCl} + \\text{H}_2\\text{O})$$`;
+  }
+
+  // === ELECTRICITY & OHM'S LAW ===
+  if (q.includes("ohm's law") || q.includes("ohms law") || (q.includes("electric") && q.includes("circuit"))) {
+    return `### ⚡ Ohm's Law and Electric Circuits
+
+**Statement**:
+At constant temperature, the electric current ($I$) flowing through a metallic conductor is **directly proportional to the potential difference ($V$)** across its ends:
+$$V \\propto I \\implies V = I \\cdot R$$
+
+---
+
+### 🔑 Key Formulas & Factors of Resistance:
+1. **Resistance of a Conductor**:
+   $$R = \\rho \\frac{l}{A}$$
+   *(where $\\rho$ is resistivity, $l$ is length, and $A$ is cross-sectional area).*
+2. **Resistors in Series**:
+   $$R_{\\text{eq}} = R_1 + R_2 + R_3 + \\dots$$
+   *(Current $I$ remains constant across each resistor).*
+3. **Resistors in Parallel**:
+   $$\\frac{1}{R_{\\text{eq}}} = \\frac{1}{R_1} + \\frac{1}{R_2} + \\frac{1}{R_3} + \\dots$$
+   *(Potential difference $V$ remains constant across each branch).*
+4. **Joule's Law of Heating**:
+   $$H = I^2 \\cdot R \\cdot t$$`;
+  }
+
+  // === GRAVITATION ===
+  if (q.includes("gravitation") || q.includes("gravity") || q.includes("gravitational")) {
+    return `### 🌍 Newton's Universal Law of Gravitation
+
+**Statement**:
+Every particle in the universe attracts every other particle with a force directly proportional to the product of their masses and inversely proportional to the square of the distance between them:
+$$F = G \\frac{m_1 \\cdot m_2}{r^2}$$
+
+- **$G$ (Universal Gravitational Constant)**: $6.674 \\times 10^{-11} \\text{ N}\\cdot\\text{m}^2/\\text{kg}^2$
+- **Acceleration due to Gravity ($g$)**:
+  $$g = \\frac{G \\cdot M}{R^2} \\approx 9.8\\text{ m/s}^2 \\text{ (on Earth's surface)}$$
+- **Mass vs. Weight**:
+  - **Mass ($m$)**: Quantity of matter; scalar; constant everywhere (SI: $\\text{kg}$).
+  - **Weight ($W = m \\cdot g$)**: Gravitational force acting on mass; vector; varies with location (SI: Newton, $\\text{N}$).`;
+  }
+
+  // === DYNAMIC ACADEMIC CONCEPT SUMMARY ===
   const cleanSubject =
     q.includes("math") ? "Mathematics" :
       q.includes("chem") ? "Chemistry" :
         q.includes("bio") ? "Biology" :
           "Science & Physics";
 
-  return `### 📚 Concept Breakdown: "${message}"
+  const cleanTopic = message
+    .replace(/\b(explain|what is|what are|define|definition of|how does|why does|tell me about|difference between|concept of)\b/gi, "")
+    .replace(/[?!.,;:]+$/, "")
+    .trim();
 
-Here is the academic explanation aligned with the **${board} ${classLevel}** curriculum:
+  return `### 📖 Academic Overview: "${cleanTopic || message}"
+
+**${cleanTopic || message}** is an essential topic in **${board} ${classLevel} ${cleanSubject}**.
 
 ---
 
-### 🔍 1. Core Definition
-In **${cleanSubject}**, this concept forms a key pillar of your syllabus. It describes the fundamental relationship governing physical or chemical systems, tested frequently in board examinations.
-
----
-
-### 🔑 2. Key Principles to Remember:
-1. **Conceptual Understanding**: Always relate the definitions to basic SI base units and underlying mechanisms.
-2. **Mathematical / Chemical Formulation**: Verify the relationship between dependent and independent variables.
-3. **Application in Exams**: Board exam questions typically test both direct definitions and numerical applications of this topic.
+### 🔬 Core Theoretical Principles:
+1. **Fundamental Definition**: In ${cleanSubject}, this topic examines the governing mechanisms, properties, and interactions within physical, chemical, or biological systems.
+2. **Key Relationships & Units**: When analyzing problems on this topic, identify independent and dependent variables, verify physical dimensions, and use standard SI units throughout.
+3. **Analytical Problem-Solving**:
+   - Identify given values and identify what needs to be solved.
+   - State the governing equation or definition explicitly.
+   - Solve step-by-step with clear units for full marks in board examinations.
 
 ---
 
 💡 **Ready to test your knowledge?**  
-Ask me *"Give me 2023 ${cleanSubject} PYQ"* to solve an authentic board question in untimed practice mode!`;
+Ask me *"Give me 5 practice questions on ${cleanTopic || message}"* or *"Give me 2023 ${cleanSubject} PYQ"*!`;
 }
 

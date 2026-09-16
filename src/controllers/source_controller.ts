@@ -77,7 +77,10 @@ export const uploadSourceController = async (
       return;
     }
 
-    const source = await createSource(studentId, req.file);
+    const transcript =
+      typeof req.body?.transcript === "string" ? req.body.transcript : undefined;
+
+    const source = await createSource(studentId, req.file, transcript);
 
     res.status(201).json({
       success: true,

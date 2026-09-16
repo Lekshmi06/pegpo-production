@@ -22,7 +22,8 @@ interface UploadedFile {
 
 export const createSource = async (
   studentId: string,
-  file: UploadedFile
+  file: UploadedFile,
+  providedTranscript?: string
 ) => {
   if (!mongoose.isValidObjectId(studentId)) {
     await removeUploadedFile(file.path);
@@ -56,10 +57,11 @@ export const createSource = async (
       aiStatus: "processing",
     });
 
-    // Step 1: Text extraction (PDF / DOCX / TXT)
+    // Step 1: Text extraction / audio transcription
     const extractedDocument = await extractDocumentText(
       file.path,
-      file.mimetype
+      file.mimetype,
+      providedTranscript
     );
 
     // Step 2: Gemini Document Understanding Pipeline

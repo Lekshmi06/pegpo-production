@@ -38,6 +38,31 @@ const allowedMimeTypes = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "text/plain",
+  "audio/webm",
+  "audio/wav",
+  "audio/wave",
+  "audio/x-wav",
+  "audio/mp3",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
+  "audio/flac",
+]);
+
+const allowedExtensions = new Set([
+  ".pdf",
+  ".docx",
+  ".txt",
+  ".webm",
+  ".wav",
+  ".mp3",
+  ".ogg",
+  ".m4a",
+  ".mp4",
+  ".aac",
+  ".flac",
 ]);
 
 const fileFilter: multer.Options["fileFilter"] = (
@@ -45,10 +70,12 @@ const fileFilter: multer.Options["fileFilter"] = (
   file,
   cb
 ) => {
-  if (!allowedMimeTypes.has(file.mimetype)) {
+  const extension = path.extname(file.originalname).toLowerCase();
+
+  if (!allowedMimeTypes.has(file.mimetype) && !allowedExtensions.has(extension)) {
     cb(
       new Error(
-        "Unsupported file type. Only PDF, DOCX, and TXT files are allowed."
+        "Unsupported file type. Allowed formats: PDF, DOCX, TXT, and Audio (WEBM, WAV, MP3, M4A, OGG)."
       )
     );
     return;
@@ -61,7 +88,7 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 20 * 1024 * 1024,
+    fileSize: 50 * 1024 * 1024, // 50MB for lecture recordings & textbooks
   },
 });
 
