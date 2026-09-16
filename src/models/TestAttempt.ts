@@ -7,9 +7,24 @@ export type QuestionAttemptStatus = "attempted" | "revise" | "skipped";
 export interface ITestAnswerItem {
   questionId: mongoose.Types.ObjectId;
   selectedOption?: string;
+  numericalAnswer?: number;
+  sectionId?: string;
   status: QuestionAttemptStatus;
   isCorrect?: boolean;
   marksAwarded: number;
+}
+
+export interface ITestSectionScore {
+  sectionId: string;
+  sectionName: string;
+  subject: string;
+  attemptedCount: number;
+  correctCount: number;
+  incorrectCount: number;
+  skippedCount: number;
+  score: number;
+  maxScore: number;
+  accuracy: number;
 }
 
 export interface ITestAttempt extends Document {
@@ -30,6 +45,13 @@ export interface ITestAttempt extends Document {
   maxScore: number;
   percentage: number;
   accuracy: number;
+
+  // Competitive exam sectional breakdown & ranking metrics
+  sectionScores?: ITestSectionScore[];
+  percentile?: number;
+  allIndiaRank?: number;
+  totalCandidates?: number;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,6 +67,13 @@ const testAnswerItemSchema = new Schema<ITestAnswerItem>(
       type: String,
       trim: true,
     },
+    numericalAnswer: {
+      type: Number,
+    },
+    sectionId: {
+      type: String,
+      trim: true,
+    },
     status: {
       type: String,
       enum: ["attempted", "revise", "skipped"],
@@ -55,6 +84,55 @@ const testAnswerItemSchema = new Schema<ITestAnswerItem>(
       default: false,
     },
     marksAwarded: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: false }
+);
+
+const testSectionScoreSchema = new Schema<ITestSectionScore>(
+  {
+    sectionId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    sectionName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    subject: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    attemptedCount: {
+      type: Number,
+      default: 0,
+    },
+    correctCount: {
+      type: Number,
+      default: 0,
+    },
+    incorrectCount: {
+      type: Number,
+      default: 0,
+    },
+    skippedCount: {
+      type: Number,
+      default: 0,
+    },
+    score: {
+      type: Number,
+      default: 0,
+    },
+    maxScore: {
+      type: Number,
+      default: 0,
+    },
+    accuracy: {
       type: Number,
       default: 0,
     },
@@ -139,6 +217,20 @@ const testAttemptSchema = new Schema<ITestAttempt>(
     accuracy: {
       type: Number,
       default: 0,
+    },
+
+    sectionScores: {
+      type: [testSectionScoreSchema],
+      default: [],
+    },
+    percentile: {
+      type: Number,
+    },
+    allIndiaRank: {
+      type: Number,
+    },
+    totalCandidates: {
+      type: Number,
     },
   },
   {

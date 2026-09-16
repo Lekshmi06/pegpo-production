@@ -6,9 +6,11 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "seed:tests": "tsx src/config/seed_tests.ts",
+    "seed:competitive": "tsx src/config/seed_competitive_exams.ts",
     "typecheck": "tsc --noEmit",
     "test:intent": "tsx src/config/verify_intent_detection.ts",
-    "verify:generate": "tsx src/config/verify_generate_test.ts"
+    "verify:generate": "tsx src/config/verify_generate_test.ts",
+    "verify:competitive": "tsx src/config/verify_competitive_exam.ts"
   },
   "keywords": [],
   "author": "",

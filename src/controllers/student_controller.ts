@@ -12,6 +12,7 @@ const educationLevels = [
   "school",
   "undergraduate",
   "postgraduate",
+  "competitive_exam",
   "professional",
   "other",
 ] as const;
@@ -26,6 +27,9 @@ const updateableFields = [
   "learningPath",
   "education",
   "schoolDetails",
+  "undergraduateDetails",
+  "postgraduateDetails",
+  "competitiveExamDetails",
   "language",
 ];
 const educationFields = [

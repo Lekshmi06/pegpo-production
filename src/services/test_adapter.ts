@@ -14,6 +14,8 @@ export interface CreateTestFromQuestionsParams {
   title?: string;
   durationMinutes?: number;
   topic?: string;
+  category?: string;
+  sourceType?: "curriculum" | "ai_generated" | "teacher" | "system" | "previous_year";
 }
 
 /**
@@ -33,8 +35,19 @@ export async function createTestFromQuestions(
     topic,
   } = params;
 
-  if (!questions || questions.length === 0) {
-    throw new Error("Cannot create test without questions");
+  // Validate final question array before creating the Test record
+  const validatedQuestions = (questions || []).filter(
+    (q) =>
+      q &&
+      typeof q.question === "string" &&
+      q.question.trim().length >= 5 &&
+      Array.isArray(q.options) &&
+      q.options.length === 4 &&
+      ["A", "B", "C", "D"].includes(q.correctAnswer)
+  );
+
+  if (validatedQuestions.length === 0) {
+    throw new Error("Cannot create test: No valid questions provided");
   }
 
   const subject = context.selectedSubject || "Physics";
@@ -52,9 +65,9 @@ export async function createTestFromQuestions(
   const resolvedDuration =
     durationMinutes && durationMinutes > 0
       ? durationMinutes
-      : Math.max(10, questions.length * 2);
+      : Math.max(10, validatedQuestions.length * 2);
 
-  const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 1), 0);
+  const totalMarks = validatedQuestions.reduce((sum, q) => sum + (q.marks || 1), 0);
   const passingMarks = Math.ceil(totalMarks * 0.4);
 
   // 1. Instantiate the Test document
@@ -70,9 +83,9 @@ export async function createTestFromQuestions(
     totalMarks,
     passingMarks,
     isLocked: false,
-    category: `${subject} (${board} ${classLevel})`,
+    category: params.category || `${subject} (${board} ${classLevel})`,
     status: "published",
-    sourceType: "ai_generated",
+    sourceType: params.sourceType || "ai_generated",
     studentProfileId: new mongoose.Types.ObjectId(context.studentProfileId),
     createdBy: new mongoose.Types.ObjectId(context.userId),
     sourceId: materialInfo?.sourceId,
@@ -85,8 +98,8 @@ export async function createTestFromQuestions(
   // 2. Persist individual Question documents linked to this Test
   const questionIds: mongoose.Types.ObjectId[] = [];
 
-  for (let i = 0; i < questions.length; i++) {
-    const q = questions[i];
+  for (let i = 0; i < validatedQuestions.length; i++) {
+    const q = validatedQuestions[i];
 
     const questionDoc = await Question.create({
       testId: testDoc._id,

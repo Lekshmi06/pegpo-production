@@ -3,7 +3,48 @@ import { AcademicContext } from "./academic_context_service";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
+const CANDIDATE_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemini-3.1-flash-lite",
+];
+
+/**
+ * Executes a generation prompt trying candidate models sequentially upon rate-limit or availability errors.
+ */
+async function callGeminiWithModelFallback(prompt: string): Promise<string> {
+  if (!ai) return "";
+
+  let lastError: any = null;
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+      });
+      const text = response.text || "";
+      if (text.trim().length > 0) {
+        return text;
+      }
+    } catch (err: any) {
+      lastError = err;
+      console.warn(
+        `[ai_question_generator] Model ${model} failed: ${err.message?.slice(0, 100)}. Trying fallback model...`
+      );
+    }
+  }
+
+  if (lastError) {
+    console.warn(
+      "[ai_question_generator] All Gemini candidate models failed:",
+      lastError.message
+    );
+  }
+  return "";
+}
 
 export interface UniversalQuestionOption {
   id: "A" | "B" | "C" | "D";
@@ -176,160 +217,435 @@ export function validateAndRepairQuestions(
 
 /**
  * Intelligent curriculum-grounded fallback generator when Gemini API key is absent or API is unavailable.
+ * Strictly respects student's grade level and uploaded curriculum concepts.
  */
 function generateFallbackCurriculumQuestions(
   params: GenerateQuestionsParams
 ): UniversalQuestion[] {
   const { context, materialName, questionCount = 10, topic } = params;
-  const subject = context.selectedSubject || "Physics";
+  const subject = context.selectedSubject || "Basic Science";
   const board = context.board || "State Board";
-  const classLevel = context.classLevel || "Class 11";
-  const activeTopic = topic || `${subject} Core Fundamentals`;
+  const classLevel = context.classLevel || "Class 7";
+  const isMiddleSchool = /Class\s*[5-8]\b/i.test(classLevel);
+  const activeTopic = topic || `${subject} Core Curriculum`;
 
-  const templates = [
+  // Grade 7 (Middle School) curriculum questions strictly grouped by SCERT syllabus topics
+  const class7ScienceTemplates = [
+    // --- Wonders of Visible Light (5 questions) ---
     {
-      question: `In ${subject} for ${board} ${classLevel}, which of the following represents the fundamental SI base unit relationship?`,
+      question: "According to the laws of reflection of light, what is the relationship between the angle of incidence (i) and the angle of reflection (r)?",
       options: [
-        { id: "A" as const, text: "Force is measured in Newtons (kg·m/s²)" },
-        { id: "B" as const, text: "Velocity is measured in m/s²" },
-        { id: "C" as const, text: "Energy is measured in Watts per second" },
-        { id: "D" as const, text: "Pressure is measured in Pascals (N·m²)" },
+        { id: "A" as const, text: "Angle of incidence is equal to angle of reflection (i = r)" },
+        { id: "B" as const, text: "Angle of incidence is always greater than angle of reflection" },
+        { id: "C" as const, text: "Angle of reflection is always double the angle of incidence" },
+        { id: "D" as const, text: "Angle of incidence plus angle of reflection equals 90°" },
       ],
       correctAnswer: "A" as const,
-      explanation: "Force F = m·a, so 1 Newton = 1 kg × 1 m/s² = 1 kg·m/s².",
-      hint: "Recall Newton's second law: Force equals mass multiplied by acceleration.",
+      explanation: "By the fundamental Law of Reflection, the angle of incidence is always equal to the angle of reflection (∠i = ∠r).",
+      hint: "Think about looking directly into a flat plane mirror.",
       difficulty: "Easy" as const,
       marks: 1,
+      topic: "Wonders of Visible Light",
+      stepByStepSolution: [
+        "Step 1: Identify the incident ray, reflected ray, and normal at the point of incidence.",
+        "Step 2: Recall the first law of reflection: The angle of incidence equals the angle of reflection (∠i = ∠r).",
+        "Step 3: Confirm Option A is the correct universal relationship.",
+      ],
     },
     {
-      question: `According to the ${board} ${classLevel} syllabus, what condition must be satisfied for an isolated system to conserve total mechanical energy?`,
+      question: "Which type of mirror is commonly used by dentists to obtain an enlarged, erect image of teeth?",
       options: [
-        { id: "A" as const, text: "All acting internal forces must be conservative" },
-        { id: "B" as const, text: "Frictional and viscous forces must be dominant" },
-        { id: "C" as const, text: "The net acceleration of all bodies must be zero" },
-        { id: "D" as const, text: "The velocity of the center of mass must remain zero" },
+        { id: "A" as const, text: "Concave mirror" },
+        { id: "B" as const, text: "Convex mirror" },
+        { id: "C" as const, text: "Plane mirror" },
+        { id: "D" as const, text: "Cylindrical mirror" },
       ],
       correctAnswer: "A" as const,
-      explanation: "Mechanical energy (Kinetic + Potential) is conserved when only conservative forces do work.",
-      hint: "Non-conservative forces like friction dissipate mechanical energy into heat.",
+      explanation: "When an object is placed close to a concave mirror (between pole and focus), it forms a virtual, erect, and magnified image.",
+      hint: "Dentists need a magnified image of teeth to inspect small cavities.",
       difficulty: "Medium" as const,
       marks: 1,
+      topic: "Wonders of Visible Light",
+      stepByStepSolution: [
+        "Step 1: Determine the requirement: a magnified and erect image.",
+        "Step 2: Convex mirrors only form diminished images; plane mirrors form same-size images.",
+        "Step 3: A concave mirror forms a magnified virtual image when the object is held close to it.",
+      ],
     },
     {
-      question: `When analyzing dimensional formulas in ${subject}, which physical quantity has the dimensional formula [M L² T⁻²]?`,
+      question: "When white sunlight passes through a glass triangular prism, it splits into seven distinct colors. What is this optical phenomenon called?",
       options: [
-        { id: "A" as const, text: "Power" },
-        { id: "B" as const, text: "Work / Energy" },
-        { id: "C" as const, text: "Linear Momentum" },
-        { id: "D" as const, text: "Pressure" },
+        { id: "A" as const, text: "Dispersion of light" },
+        { id: "B" as const, text: "Total internal reflection" },
+        { id: "C" as const, text: "Diffraction" },
+        { id: "D" as const, text: "Polarization" },
       ],
-      correctAnswer: "B" as const,
-      explanation: "Work = Force × Displacement = [M L T⁻²] × [L] = [M L² T⁻²].",
-      hint: "Work done has the same dimensions as kinetic and potential energy.",
+      correctAnswer: "A" as const,
+      explanation: "Dispersion is the splitting of white light into its seven constituent spectral colors (VIBGYOR) when passing through a transparent prism.",
+      hint: "Think about what natural process forms a rainbow in the sky after rain.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Wonders of Visible Light",
+      stepByStepSolution: [
+        "Step 1: Recall Sir Isaac Newton's prism experiment.",
+        "Step 2: White light consists of seven colors that bend by different amounts through glass.",
+        "Step 3: The process is termed dispersion.",
+      ],
+    },
+    {
+      question: "A periscope is an instrument that allows an observer to view objects over obstacles. How many plane mirrors are used inside a simple periscope, and at what angle are they inclined to the path of light?",
+      options: [
+        { id: "A" as const, text: "Two mirrors inclined at 45°" },
+        { id: "B" as const, text: "One mirror inclined at 90°" },
+        { id: "C" as const, text: "Two mirrors inclined at 60°" },
+        { id: "D" as const, text: "Four mirrors inclined at 30°" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "A simple periscope uses two plane mirrors fixed parallel to each other, each at an angle of 45° to the tube's axis, causing two 90° reflections.",
+      hint: "Each mirror reflects the light beam by a right angle (90°), requiring an angle of incidence of 45°.",
       difficulty: "Medium" as const,
       marks: 1,
+      topic: "Wonders of Visible Light",
+      stepByStepSolution: [
+        "Step 1: Light enters the top opening and strikes the first mirror at 45°.",
+        "Step 2: The light reflects down the tube and hits the bottom mirror at 45°.",
+        "Step 3: Two plane mirrors inclined at 45° are required.",
+      ],
     },
     {
-      question: `A body travels along a straight path. If its displacement is proportional to the square of time (s ∝ t²), what can be deduced about its motion?`,
+      question: "When you raise your right hand while standing in front of a plane mirror, your reflection appears to raise its left hand. What is this phenomenon called?",
       options: [
-        { id: "A" as const, text: "The body moves with uniform non-zero acceleration" },
-        { id: "B" as const, text: "The body moves with uniform velocity" },
-        { id: "C" as const, text: "The body moves with decreasing velocity" },
-        { id: "D" as const, text: "The acceleration of the body is continuously changing" },
+        { id: "A" as const, text: "Lateral inversion" },
+        { id: "B" as const, text: "Refraction" },
+        { id: "C" as const, text: "Diffraction" },
+        { id: "D" as const, text: "Interference" },
       ],
       correctAnswer: "A" as const,
-      explanation: "s = (1/2) a t² implies second derivative d²s/dt² = a (constant acceleration).",
-      hint: "Differentiate displacement twice with respect to time.",
+      explanation: "Lateral inversion is the apparent sideways reversal of an object's image in a plane mirror, where left becomes right and right becomes left.",
+      hint: "Notice how the word 'AMBULANCE' is written backwards on the front of emergency vehicles.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Wonders of Visible Light",
+      stepByStepSolution: [
+        "Step 1: Identify that side-to-side reversal in plane mirrors occurs.",
+        "Step 2: The scientific term for sideways reversal of an image is lateral inversion.",
+        "Step 3: Option A is the correct answer.",
+      ],
+    },
+
+    // --- Respiration in Organisms (5 questions) ---
+    {
+      question: "During cellular respiration in living organisms, glucose combines with which gas to release energy, water, and carbon dioxide?",
+      options: [
+        { id: "A" as const, text: "Oxygen" },
+        { id: "B" as const, text: "Nitrogen" },
+        { id: "C" as const, text: "Hydrogen" },
+        { id: "D" as const, text: "Carbon monoxide" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "In aerobic respiration, glucose is broken down in the presence of oxygen to produce carbon dioxide, water, and usable energy (ATP).",
+      hint: "This is the vital gas we breathe into our lungs from air.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Respiration in Organisms",
+      stepByStepSolution: [
+        "Step 1: Write the general equation: Glucose + Oxygen -> Carbon Dioxide + Water + Energy.",
+        "Step 2: Identify the essential gas required: Oxygen.",
+        "Step 3: Select Option A.",
+      ],
+    },
+    {
+      question: "Cockroaches and insects do not possess lungs. Through which small lateral openings on their body surface do they draw air into their respiratory system?",
+      options: [
+        { id: "A" as const, text: "Spiracles" },
+        { id: "B" as const, text: "Gills" },
+        { id: "C" as const, text: "Tracheae" },
+        { id: "D" as const, text: "Stomata" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "Insects have tiny valve-like openings on the sides of their bodies called spiracles that lead into a network of air tubes (tracheae).",
+      hint: "These are small pores on the lateral body segments through which air enters.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Respiration in Organisms",
+      stepByStepSolution: [
+        "Step 1: Differentiate between the pores (spiracles) and internal tubes (tracheae).",
+        "Step 2: The openings on the body surface are spiracles.",
+        "Step 3: Confirm Option A.",
+      ],
+    },
+    {
+      question: "After sprinting vigorously in a race, an athlete experiences severe muscle cramps. This temporary condition is caused by the accumulation of which acid produced during anaerobic respiration?",
+      options: [
+        { id: "A" as const, text: "Lactic acid" },
+        { id: "B" as const, text: "Hydrochloric acid" },
+        { id: "C" as const, text: "Acetic acid" },
+        { id: "D" as const, text: "Citric acid" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "During strenuous exercise when oxygen supply is insufficient, muscle cells respire anaerobically, partially breaking down glucose into lactic acid, causing cramps.",
+      hint: "A warm bath or massage improves circulation and breaks down this fatigue acid.",
       difficulty: "Medium" as const,
       marks: 1,
+      topic: "Respiration in Organisms",
+      stepByStepSolution: [
+        "Step 1: High energy demand with limited oxygen leads to anaerobic respiration in muscles.",
+        "Step 2: Anaerobic breakdown of glucose in human muscles yields lactic acid.",
+        "Step 3: Lactic acid buildup causes cramps.",
+      ],
     },
     {
-      question: `Which of the following statements correctly distinguishes between scalar and vector quantities?`,
+      question: "What physical changes occur in the human chest cavity during normal inhalation (breathing in)?",
       options: [
-        { id: "A" as const, text: "Scalars require only magnitude; vectors require magnitude and direction obeying vector addition" },
-        { id: "B" as const, text: "Scalars always have positive values, whereas vectors can only be negative" },
-        { id: "C" as const, text: "Current is a vector because it has magnitude and direction" },
-        { id: "D" as const, text: "All physical quantities with direction are vectors" },
+        { id: "A" as const, text: "Ribs move up and outwards; diaphragm moves downwards" },
+        { id: "B" as const, text: "Ribs move down and inwards; diaphragm moves upwards" },
+        { id: "C" as const, text: "Ribs move down; diaphragm expands upwards" },
+        { id: "D" as const, text: "Ribs and diaphragm both remain completely stationary" },
       ],
       correctAnswer: "A" as const,
-      explanation: "A vector must possess both magnitude and direction, and importantly obey the triangle or parallelogram law of addition.",
-      hint: "Electric current has direction but does not obey vector algebra, so it is a scalar.",
-      difficulty: "Easy" as const,
+      explanation: "During inhalation, ribs move up and out while the diaphragm moves down and flattens, expanding chest volume and drawing atmospheric air into lungs.",
+      hint: "Take a deep breath and feel your chest expand outward.",
+      difficulty: "Medium" as const,
       marks: 1,
-    },
-    {
-      question: `In vector algebra, what is the magnitude of the cross product (A × B) of two perpendicular vectors of magnitudes 3 and 4?`,
-      options: [
-        { id: "A" as const, text: "0" },
-        { id: "B" as const, text: "7" },
-        { id: "C" as const, text: "12" },
-        { id: "D" as const, text: "25" },
+      topic: "Respiration in Organisms",
+      stepByStepSolution: [
+        "Step 1: Chest cavity must expand to create lower pressure than atmospheric air.",
+        "Step 2: Intercostal muscles pull ribs up and out; diaphragm contracts downwards.",
+        "Step 3: Select Option A.",
       ],
-      correctAnswer: "C" as const,
-      explanation: "|A × B| = |A| |B| sin(90°) = 3 × 4 × 1 = 12.",
-      hint: "sin(90°) = 1 for mutually perpendicular vectors.",
-      difficulty: "Easy" as const,
-      marks: 1,
     },
     {
-      question: `What is the angle of projection at which the horizontal range of a projectile becomes maximum on level ground?`,
+      question: "Yeast cells are unicellular fungi that respire anaerobically. What are the key end products when yeast breaks down glucose in the absence of oxygen?",
       options: [
-        { id: "A" as const, text: "30°" },
-        { id: "B" as const, text: "45°" },
-        { id: "C" as const, text: "60°" },
-        { id: "D" as const, text: "90°" },
-      ],
-      correctAnswer: "B" as const,
-      explanation: "Range R = (u² sin 2θ) / g. Range is maximum when sin 2θ = 1 => 2θ = 90° => θ = 45°.",
-      hint: "sin 2θ reaches its peak value of 1 when 2θ = 90°.",
-      difficulty: "Easy" as const,
-      marks: 1,
-    },
-    {
-      question: `Newton’s First Law of Motion defines which fundamental property of physical bodies?`,
-      options: [
-        { id: "A" as const, text: "Inertia" },
-        { id: "B" as const, text: "Momentum" },
-        { id: "C" as const, text: "Impulse" },
-        { id: "D" as const, text: "Frictional resistance" },
+        { id: "A" as const, text: "Alcohol (ethanol), carbon dioxide, and energy" },
+        { id: "B" as const, text: "Lactic acid and oxygen" },
+        { id: "C" as const, text: "Water and oxygen only" },
+        { id: "D" as const, text: "Carbon monoxide and hydrogen" },
       ],
       correctAnswer: "A" as const,
-      explanation: "The first law states that an object remains in its state of rest or uniform motion unless acted on by an external unbalanced force, defining inertia.",
-      hint: "It is often called the Law of Inertia.",
-      difficulty: "Easy" as const,
+      explanation: "Yeast respire anaerobically through fermentation, converting glucose into alcohol (ethanol) and carbon dioxide with energy release.",
+      hint: "This biological process is used to make bread dough rise and in brewing.",
+      difficulty: "Medium" as const,
       marks: 1,
-    },
-    {
-      question: `A passenger standing in a moving bus falls forward when the bus suddenly applies brakes. This is an illustration of:`,
-      options: [
-        { id: "A" as const, text: "Inertia of rest" },
-        { id: "B" as const, text: "Inertia of motion" },
-        { id: "C" as const, text: "Conservation of momentum" },
-        { id: "D" as const, text: "Centripetal reaction" },
+      topic: "Respiration in Organisms",
+      stepByStepSolution: [
+        "Step 1: Recall anaerobic fermentation in single-celled yeast.",
+        "Step 2: Equation: Glucose -> Alcohol + Carbon dioxide + Energy.",
+        "Step 3: Option A is correct.",
       ],
-      correctAnswer: "B" as const,
-      explanation: "The lower part of the passenger's body comes to rest with the bus, while the upper body tends to continue moving forward due to inertia of motion.",
-      hint: "The body was already in motion and tends to maintain that velocity.",
-      difficulty: "Easy" as const,
-      marks: 1,
     },
+
+    // --- Heat and Temperature (5 questions) ---
     {
-      question: `What is the SI unit of Impulse of a force?`,
+      question: "Which mode of heat transfer occurs through direct particle-to-particle vibration without the actual movement of the medium, common in solid metals?",
       options: [
-        { id: "A" as const, text: "N·s or kg·m/s" },
-        { id: "B" as const, text: "N/s" },
-        { id: "C" as const, text: "Joule·second" },
-        { id: "D" as const, text: "Watt·second" },
+        { id: "A" as const, text: "Conduction" },
+        { id: "B" as const, text: "Convection" },
+        { id: "C" as const, text: "Radiation" },
+        { id: "D" as const, text: "Absorption" },
       ],
       correctAnswer: "A" as const,
-      explanation: "Impulse = Force × time = N·s. It also equals change in linear momentum: kg·m/s.",
-      hint: "Impulse has the identical dimensions and units as linear momentum.",
+      explanation: "Conduction is the process where heat is transferred from the hotter end to the colder end in solids without bodily movement of the particles.",
+      hint: "Think about heating one end of a metal spoon in hot tea.",
       difficulty: "Easy" as const,
       marks: 1,
+      topic: "Heat and Temperature",
+      stepByStepSolution: [
+        "Step 1: Recall the three modes of heat transfer: Conduction, Convection, Radiation.",
+        "Step 2: In solids like metals, particles vibrate and transfer thermal energy to neighboring particles.",
+        "Step 3: Conduction is therefore the mode that occurs in solids.",
+      ],
+    },
+    {
+      question: "What is the normal temperature of a healthy human body on the Celsius scale?",
+      options: [
+        { id: "A" as const, text: "37°C" },
+        { id: "B" as const, text: "35°C" },
+        { id: "C" as const, text: "42°C" },
+        { id: "D" as const, text: "98.6°C" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "The normal internal body temperature of a healthy human is 37°C (which corresponds to 98.6°F on the Fahrenheit scale).",
+      hint: "Be careful not to confuse the Celsius value (around thirty-seven) with the Fahrenheit value (98.6).",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Heat and Temperature",
+      stepByStepSolution: [
+        "Step 1: Recall human body temperature scales.",
+        "Step 2: On the Celsius scale, normal human body temperature is 37°C.",
+        "Step 3: Select Option A.",
+      ],
+    },
+    {
+      question: "Why does a clinical thermometer have a slight bend or constriction (kink) in the capillary tube near the bulb?",
+      options: [
+        { id: "A" as const, text: "To prevent the mercury level from falling on its own before reading" },
+        { id: "B" as const, text: "To allow the thermometer to measure boiling water" },
+        { id: "C" as const, text: "To make the thermometer easier to clean" },
+        { id: "D" as const, text: "To prevent the mercury from expanding" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "The kink in a clinical thermometer prevents mercury from dropping back into the bulb when removed from the patient's mouth, allowing accurate reading.",
+      hint: "This feature ensures you have enough time to read the temperature accurately after taking it out.",
+      difficulty: "Medium" as const,
+      marks: 1,
+      topic: "Heat and Temperature",
+      stepByStepSolution: [
+        "Step 1: When removed from the warm mouth into cooler room air, mercury contracts.",
+        "Step 2: The kink breaks the thread of mercury, holding the highest reading.",
+        "Step 3: Confirm Option A.",
+      ],
+    },
+    {
+      question: "In coastal areas during daytime, cool air blows from the sea towards the land. What is this phenomenon called, and what causes it?",
+      options: [
+        { id: "A" as const, text: "Sea breeze, caused by convection currents as land heats up faster than water" },
+        { id: "B" as const, text: "Land breeze, caused by conduction of heat into the ocean" },
+        { id: "C" as const, text: "Trade winds, caused by the rotation of the Earth" },
+        { id: "D" as const, text: "Cyclone, caused by ocean evaporation" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "During the day, land warms faster than sea water. Warm air over land rises, and cooler denser air from the sea rushes in as a sea breeze (convection).",
+      hint: "The breeze is named after its origin: coming from the sea towards the warmer land.",
+      difficulty: "Medium" as const,
+      marks: 1,
+      topic: "Heat and Temperature",
+      stepByStepSolution: [
+        "Step 1: Land heats up faster than water during the day.",
+        "Step 2: Hot air above land rises, creating a low-pressure area.",
+        "Step 3: Cool air over the sea moves towards the land, forming a sea breeze.",
+      ],
+    },
+    {
+      question: "How does heat from the Sun travel across millions of kilometers of empty space (vacuum) to warm the Earth?",
+      options: [
+        { id: "A" as const, text: "Radiation" },
+        { id: "B" as const, text: "Conduction" },
+        { id: "C" as const, text: "Convection" },
+        { id: "D" as const, text: "Advection" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "Radiation is the mode of heat transfer via electromagnetic waves that does not require any material medium, allowing solar thermal energy to cross space.",
+      hint: "Conduction and convection both require material particles, but outer space is empty vacuum.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Heat and Temperature",
+      stepByStepSolution: [
+        "Step 1: Identify that space between Sun and Earth is empty vacuum.",
+        "Step 2: Conduction and convection cannot occur without matter.",
+        "Step 3: Radiation transfers thermal energy without needing a medium.",
+      ],
+    },
+
+    // --- Acids, Bases, and Salts (5 questions) ---
+    {
+      question: "Which natural indicator changes from its normal color to red in an acidic solution?",
+      options: [
+        { id: "A" as const, text: "Blue litmus paper" },
+        { id: "B" as const, text: "Red litmus paper" },
+        { id: "C" as const, text: "Turmeric paste" },
+        { id: "D" as const, text: "Phenolphthalein" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "Acids turn blue litmus paper red, while bases turn red litmus paper blue.",
+      hint: "Remember: 'A-B-R' -> Acid turns Blue to Red.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Acids, Bases, and Salts",
+      stepByStepSolution: [
+        "Step 1: Recall tests for acids using litmus paper.",
+        "Step 2: Acidic substances turn blue litmus red.",
+        "Step 3: Hence, Option A is the correct answer.",
+      ],
+    },
+    {
+      question: "When an acid reacts with a base, they cancel each other's effects to produce salt and water with the evolution of heat. What is this reaction called?",
+      options: [
+        { id: "A" as const, text: "Neutralization reaction" },
+        { id: "B" as const, text: "Combustion reaction" },
+        { id: "C" as const, text: "Decomposition reaction" },
+        { id: "D" as const, text: "Precipitation reaction" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "The reaction between an acid and a base is termed a neutralization reaction, producing salt and water (Acid + Base -> Salt + Water).",
+      hint: "The acid and base make the solution neither acidic nor basic (neutral).",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Acids, Bases, and Salts",
+      stepByStepSolution: [
+        "Step 1: Acid + Base -> Salt + Water + Heat.",
+        "Step 2: The acidity and basicity are cancelled out.",
+        "Step 3: This is known as neutralization.",
+      ],
+    },
+
+    // --- Along with Progress (5 questions) ---
+    {
+      question: "Which of the following is an eco-friendly farming method that preserves soil fertility without harmful synthetic chemicals?",
+      options: [
+        { id: "A" as const, text: "Organic farming using compost and bio-fertilizers" },
+        { id: "B" as const, text: "Excessive application of chemical pesticides" },
+        { id: "C" as const, text: "Monoculture without crop rotation" },
+        { id: "D" as const, text: "Stubble burning after harvesting" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "Organic farming utilizes natural compost, green manures, and bio-fertilizers to sustain soil health and ecology.",
+      hint: "Look for the practice that uses natural inputs instead of artificial poisons.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Along with Progress",
+      stepByStepSolution: [
+        "Step 1: Review sustainable agricultural practices.",
+        "Step 2: Compost and bio-fertilizers nurture soil microbes and prevent chemical runoff.",
+        "Step 3: Option A is the sustainable and eco-friendly technique.",
+      ],
+    },
+
+    // --- Adding Angles (5 questions) ---
+    {
+      question: "What is the sum of two adjacent angles that form a linear pair along a straight line?",
+      options: [
+        { id: "A" as const, text: "180°" },
+        { id: "B" as const, text: "90°" },
+        { id: "C" as const, text: "360°" },
+        { id: "D" as const, text: "45°" },
+      ],
+      correctAnswer: "A" as const,
+      explanation: "A linear pair of angles are adjacent angles formed when two lines intersect, and their sum always equals 180° (supplementary).",
+      hint: "Angles on a straight line always add up to a straight angle.",
+      difficulty: "Easy" as const,
+      marks: 1,
+      topic: "Adding Angles",
+      stepByStepSolution: [
+        "Step 1: Define a linear pair: two adjacent angles whose non-common sides form a straight line.",
+        "Step 2: The angle measure of a straight line is 180°.",
+        "Step 3: Conclude that the sum is 180°.",
+      ],
     },
   ];
 
-  const pool: UniversalQuestion[] = templates.map((t, idx) => ({
+  const templates = isMiddleSchool ? class7ScienceTemplates : [];
+
+  // Filter templates strictly by requested topic to avoid cross-topic contamination
+  const requestedTopic = (topic || "").toLowerCase().trim();
+  let matchedTemplates = templates.filter((t) => {
+    if (!requestedTopic) return true;
+    const tTopic = (t.topic || "").toLowerCase();
+    if (tTopic.includes(requestedTopic) || requestedTopic.includes(tTopic)) return true;
+    if (requestedTopic.includes("light") && tTopic.includes("light")) return true;
+    if (requestedTopic.includes("respiration") && tTopic.includes("respiration")) return true;
+    if (requestedTopic.includes("heat") && tTopic.includes("heat")) return true;
+    if (requestedTopic.includes("acid") && tTopic.includes("acid")) return true;
+    if (requestedTopic.includes("progress") && tTopic.includes("progress")) return true;
+    if (requestedTopic.includes("angle") && tTopic.includes("angle")) return true;
+    return false;
+  });
+
+  if (matchedTemplates.length === 0) {
+    matchedTemplates = templates;
+  }
+
+  const pool: UniversalQuestion[] = matchedTemplates.map((t) => ({
     question: t.question,
     sidebarTitle: t.question.slice(0, 45),
     options: t.options,
@@ -338,11 +654,43 @@ function generateFallbackCurriculumQuestions(
     hint: t.hint,
     difficulty: t.difficulty,
     marks: t.marks,
-    topic: activeTopic,
+    topic: t.topic || activeTopic,
     chapter: materialName || `${subject} Chapter`,
+    stepByStepSolution: t.stepByStepSolution,
   }));
 
   return pool.slice(0, questionCount);
+}
+
+import { TEST_CONFIG, resolveQuestionCount } from "../config/test_config";
+
+/**
+ * Checks whether the requested topic and subject match available curriculum templates.
+ * Prevents injecting unrelated questions into mismatched topics or grades.
+ */
+function isTopicMatchingCurriculumTemplates(
+  classLevel?: string,
+  topic?: string,
+  subject?: string
+): boolean {
+  const isMiddleSchool = /Class\s*[5-8]\b/i.test(classLevel || "");
+  if (!isMiddleSchool) return false;
+  if (!topic || topic.trim().length === 0) return true;
+  const t = topic.toLowerCase();
+  const s = (subject || "").toLowerCase();
+  return (
+    s.includes("science") ||
+    s.includes("math") ||
+    t.includes("light") ||
+    t.includes("mirror") ||
+    t.includes("heat") ||
+    t.includes("acid") ||
+    t.includes("base") ||
+    t.includes("respiration") ||
+    t.includes("progress") ||
+    t.includes("angle") ||
+    t.includes("matter")
+  );
 }
 
 /**
@@ -356,99 +704,220 @@ export async function generateUniversalQuestions(
     context,
     materialText,
     materialName,
-    questionCount = 10,
     difficulty = "mixed",
     topic,
     mode = "test",
   } = params;
 
-  // If AI client not configured or material is completely absent
+  // Programmatically clamp question count
+  const questionCount = resolveQuestionCount(params.questionCount);
+  const classLevel = context.classLevel || "Class 7";
+  const isMiddleSchool = /Class\s*[5-8]\b/i.test(classLevel);
+  const subject = context.selectedSubject || (isMiddleSchool ? "Basic Science" : "Science");
+  const board = context.board || "State Board";
+  const academicYear = context.academicYear || "2026–2027";
+  const targetTopic = topic || `${subject} Core Curriculum`;
+
+  // If AI client not configured or unavailable
   if (!ai) {
     console.log(
-      "Gemini API client not initialized (GEMINI_API_KEY unset). Using structured curriculum question generator."
+      "Gemini API client not initialized (GEMINI_API_KEY unset)."
     );
-    return generateFallbackCurriculumQuestions(params);
+    if (isTopicMatchingCurriculumTemplates(classLevel, topic, subject)) {
+      return generateFallbackCurriculumQuestions({
+        ...params,
+        questionCount,
+      });
+    }
+    return [];
   }
 
-  const subject = context.selectedSubject || "Physics";
-  const board = context.board || "State Board";
-  const classLevel = context.classLevel || "Class 11";
-  const targetTopic = topic || `${subject} Core Concepts`;
+  const validQuestions: UniversalQuestion[] = [];
+  const seenQuestions = new Set<string>();
 
-  const prompt = `You are a distinguished academic curriculum examiner generating high-stakes academic test questions.
+  const addQuestions = (rawList: any[]) => {
+    const repaired = validateAndRepairQuestions(
+      rawList,
+      questionCount,
+      targetTopic
+    );
+    for (const q of repaired) {
+      if (validQuestions.length >= questionCount) break;
+      const norm = q.question.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!seenQuestions.has(norm)) {
+        seenQuestions.add(norm);
+        validQuestions.push(q);
+      }
+    }
+  };
 
-STUDENT ACADEMIC CONTEXT:
-- Board: ${board}
-- Class Level: ${classLevel}
+  const prompt = `You are a distinguished academic curriculum examiner generating curriculum-grounded assessment questions for school students.
+
+STUDENT ACADEMIC PROFILE:
+- Board of Education: ${board}
+- Grade / Class Level: ${classLevel}
+- Academic Year: ${academicYear}
 - Subject: ${subject}
-- Targeted Topic: ${targetTopic}
-- Generation Mode: ${mode.toUpperCase()}
+- Targeted Topic / Chapter: ${targetTopic}
+- Assessment Mode: ${mode.toUpperCase()}
 - Number of Questions Required: ${questionCount}
 - Target Difficulty: ${difficulty}
 
-STUDENT'S UPLOADED LEARNING MATERIAL:
-Source Document: "${materialName || "Student Textbook / Study Material"}"
+STUDENT'S OFFICIAL UPLOADED CURRICULUM & SYLLABUS:
+Source Document: "${materialName || "Curriculum & Syllabus Guide"}"
 """
 ${(materialText || "").slice(0, 24000)}
 """
 
-CRITICAL INSTRUCTIONS:
-1. Base all questions strictly on the concepts, definitions, formulas, and examples presented in the provided study material.
-2. Formulate exactly ${questionCount} rigorous, high-quality Multiple Choice Questions (MCQs).
-3. Every question must have exactly four mutually exclusive options labeled A, B, C, and D.
-4. Exactly one option must be unequivocally correct.
-5. Provide a clear educational explanation of why the correct option is right and other options are incorrect.
-6. Provide a targeted, helpful pedagogical hint that guides the student without revealing the direct answer.
-7. Difficulty must be labeled "Easy", "Medium", or "Hard".
+CRITICAL PEDAGOGICAL INSTRUCTIONS:
+1. STRICT GRADE-LEVEL APPROPRIATENESS:
+   - All questions, vocabulary, options, and explanations MUST strictly match the cognitive ability and academic standards of a ${classLevel} student under ${board}.
+   - For middle-school students (e.g. Class 7), formulate clear, conceptual questions about foundational principles, everyday phenomena, and basic scientific/mathematical reasoning.
+   - NEVER introduce senior secondary (Class 11/12) advanced calculus, complex rotational dynamics, university mechanics, or collegiate formulas.
+2. EXCLUSIVE CURRICULUM GROUNDING:
+   - Base questions ONLY on the topics, chapters, and competencies outlined in the student's uploaded curriculum above.
+   - Do NOT test concepts outside the ${classLevel} syllabus.
+   - All questions must directly test "${targetTopic}" within ${subject}.
+3. MCQ FORMAT:
+   - Formulate exactly ${questionCount} Multiple Choice Questions (MCQs).
+   - Exactly 4 options labeled A, B, C, and D per question. Mutually exclusive, no ambiguity.
+   - Exactly one option is unequivocally correct.
+4. EXPLANATION, HINT & STEP-BY-STEP SOLUTION:
+   - Provide a clear, child-friendly explanation of why the correct option is right.
+   - Provide a helpful pedagogical hint that guides the student's thinking without revealing the answer.
+   - Include a "stepByStepSolution" array with 2-4 easy-to-follow steps explaining the solution logic.
+5. DIFFICULTY:
+   - Label difficulty as "Easy", "Medium", or "Hard".
 
 OUTPUT FORMAT:
-Return a strictly valid JSON array of objects with NO markdown code backticks, NO markdown formatting:
+Return a strictly valid JSON array of ${questionCount} objects with NO markdown code backticks, NO extra commentary:
 [
   {
     "question": "Clear, precise question text?",
-    "sidebarTitle": "Short 3-5 word question label",
+    "sidebarTitle": "Short 3-5 word label",
     "options": [
-      { "id": "A", "text": "First option text" },
-      { "id": "B", "text": "Second option text" },
-      { "id": "C", "text": "Third option text" },
-      { "id": "D", "text": "Fourth option text" }
+      { "id": "A", "text": "Option A" },
+      { "id": "B", "text": "Option B" },
+      { "id": "C", "text": "Option C" },
+      { "id": "D", "text": "Option D" }
     ],
     "correctAnswer": "A",
-    "explanation": "Thorough educational explanation with step-by-step logic.",
-    "hint": "Pedagogical clue guiding reasoning.",
-    "difficulty": "Medium",
+    "explanation": "Clear pedagogical explanation.",
+    "hint": "Guiding pedagogical hint.",
+    "difficulty": "Easy",
     "marks": 1,
     "topic": "${targetTopic}",
-    "chapter": "${materialName || subject}"
+    "chapter": "${materialName || subject}",
+    "stepByStepSolution": [
+      "Step 1: ...",
+      "Step 2: ...",
+      "Step 3: ..."
+    ]
   }
 ]`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
-      contents: prompt,
-    });
+    const rawText = await callGeminiWithModelFallback(prompt);
+    if (rawText) {
+      const cleanJson = cleanJsonString(rawText);
+      const parsed = JSON.parse(cleanJson);
 
-    const rawText = response.text || "";
-    const cleanJson = cleanJsonString(rawText);
-    const parsed = JSON.parse(cleanJson);
+      if (Array.isArray(parsed)) {
+        addQuestions(parsed);
+      }
+    }
+  } catch (error) {
+    console.warn("Initial Gemini question generation error:", error);
+  }
 
-    const questions = validateAndRepairQuestions(
-      parsed,
-      questionCount,
-      targetTopic
+  // Retry missing questions if Gemini returned fewer valid questions than requested
+  let retries = 0;
+  while (
+    validQuestions.length < questionCount &&
+    retries < TEST_CONFIG.MAX_GENERATION_RETRIES
+  ) {
+    retries++;
+    const missing = questionCount - validQuestions.length;
+    console.log(
+      `[generateUniversalQuestions] Have ${validQuestions.length}/${questionCount} questions for "${targetTopic}". Retrying for ${missing} remaining questions (attempt ${retries}/${TEST_CONFIG.MAX_GENERATION_RETRIES}).`
     );
 
-    if (questions.length >= Math.min(3, questionCount)) {
-      return questions;
-    }
+    const retryPrompt = `You are an academic curriculum examiner for ${board} ${classLevel} ${subject}.
+The student requires additional practice questions strictly on the topic: "${targetTopic}".
+All questions must strictly be at the ${classLevel} academic level based on their syllabus.
 
-    // If AI output was insufficient in count, pad with curriculum fallback
-    const fallbackQuestions = generateFallbackCurriculumQuestions(params);
-    const combined = [...questions, ...fallbackQuestions];
-    return combined.slice(0, questionCount);
-  } catch (error) {
-    console.error("Gemini question generation error, utilizing curriculum fallback:", error);
-    return generateFallbackCurriculumQuestions(params);
+We currently have ${validQuestions.length} questions. Generate exactly ${missing} ADDITIONAL, NEW, and UNIQUE Multiple Choice Questions (MCQs) testing "${targetTopic}".
+Do NOT duplicate any of these existing questions:
+${validQuestions.slice(-5).map((q, idx) => `${idx + 1}. ${q.question.slice(0, 100)}`).join("\n")}
+
+Strict requirements:
+1. Base all questions strictly on "${targetTopic}" from ${board} ${classLevel} curriculum.
+2. Provide exactly 4 mutually exclusive options labeled A, B, C, D for each question.
+3. Mark the single correct option (A, B, C, or D).
+4. Provide a clear explanation, hint, and stepByStepSolution array.
+5. Difficulty must be labeled "Easy", "Medium", or "Hard".
+
+Return ONLY a valid JSON array of ${missing} objects with NO markdown backticks:
+[
+  {
+    "question": "Question text?",
+    "sidebarTitle": "Short title",
+    "options": [
+      { "id": "A", "text": "Option A" },
+      { "id": "B", "text": "Option B" },
+      { "id": "C", "text": "Option C" },
+      { "id": "D", "text": "Option D" }
+    ],
+    "correctAnswer": "A",
+    "explanation": "Explanation.",
+    "hint": "Hint.",
+    "difficulty": "Easy",
+    "marks": 1,
+    "topic": "${targetTopic}",
+    "chapter": "${materialName || subject}",
+    "stepByStepSolution": [
+      "Step 1: ...",
+      "Step 2: ..."
+    ]
   }
+]`;
+
+    try {
+      const rawText = await callGeminiWithModelFallback(retryPrompt);
+      if (rawText) {
+        const parsed = JSON.parse(cleanJsonString(rawText));
+        if (Array.isArray(parsed)) {
+          addQuestions(parsed);
+        }
+      }
+    } catch (retryErr) {
+      console.warn(
+        `[generateUniversalQuestions] Retry ${retries} failed:`,
+        retryErr
+      );
+      break;
+    }
+  }
+
+  // Only pad with curriculum fallback if topic is confirmed to match curriculum templates
+  if (
+    validQuestions.length < questionCount &&
+    isTopicMatchingCurriculumTemplates(classLevel, topic, subject)
+  ) {
+    const fallbackQuestions = generateFallbackCurriculumQuestions({
+      ...params,
+      questionCount,
+    });
+    for (const fq of fallbackQuestions) {
+      if (validQuestions.length >= questionCount) break;
+      const norm = fq.question.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!seenQuestions.has(norm)) {
+        seenQuestions.add(norm);
+        validQuestions.push(fq);
+      }
+    }
+  }
+
+  // Never fill remaining slots with unrelated questions simply to satisfy count.
+  return validQuestions.slice(0, questionCount);
 }

@@ -1,6 +1,18 @@
 import mongoose, { Document, Schema } from "mongoose";
 import "./Question";
 
+export interface ITestSection {
+  id: string;
+  name: string;
+  subject: string;
+  totalQuestions: number;
+  marksPerQuestion: number;
+  negativeMarks: number;
+  passingMarks?: number;
+  durationMinutes?: number;
+  questionIds?: mongoose.Types.ObjectId[];
+}
+
 export interface ITest extends Document {
   title: string;
   description: string;
@@ -15,12 +27,22 @@ export interface ITest extends Document {
   category: string;
   questions: mongoose.Types.ObjectId[];
   status: "draft" | "published" | "archived";
-  sourceType?: "curriculum" | "ai_generated" | "teacher" | "system";
+  sourceType?: "curriculum" | "ai_generated" | "teacher" | "system" | "previous_year";
   studentProfileId?: mongoose.Types.ObjectId;
   createdBy?: mongoose.Types.ObjectId;
   sourceId?: mongoose.Types.ObjectId;
   topic?: string;
   chapter?: string;
+  isCompetitiveExam?: boolean;
+  examCategory?: string;
+  examCode?: string;
+  examTier?: string;
+  sections?: ITestSection[];
+  negativeMarkingRate?: number;
+  isPYQ?: boolean;
+  pyqYear?: number;
+  totalCandidatesEstimate?: number;
+  cutOffScore?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -95,7 +117,7 @@ const testSchema = new Schema<ITest>(
     },
     sourceType: {
       type: String,
-      enum: ["curriculum", "ai_generated", "teacher", "system"],
+      enum: ["curriculum", "ai_generated", "teacher", "system", "previous_year"],
       default: "curriculum",
     },
     studentProfileId: {
@@ -118,6 +140,59 @@ const testSchema = new Schema<ITest>(
     chapter: {
       type: String,
       trim: true,
+    },
+    isCompetitiveExam: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    examCategory: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    examCode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
+    examTier: {
+      type: String,
+      trim: true,
+    },
+    sections: [
+      {
+        id: { type: String, required: true },
+        name: { type: String, required: true },
+        subject: { type: String, required: true },
+        totalQuestions: { type: Number, required: true, default: 0 },
+        marksPerQuestion: { type: Number, required: true, default: 1 },
+        negativeMarks: { type: Number, required: true, default: 0 },
+        passingMarks: { type: Number },
+        durationMinutes: { type: Number },
+        questionIds: [{ type: Schema.Types.ObjectId, ref: "Question" }],
+      },
+    ],
+    negativeMarkingRate: {
+      type: Number,
+      default: 0,
+    },
+    isPYQ: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    pyqYear: {
+      type: Number,
+    },
+    totalCandidatesEstimate: {
+      type: Number,
+      default: 25000,
+    },
+    cutOffScore: {
+      type: Number,
+      default: 0,
     },
   },
   {

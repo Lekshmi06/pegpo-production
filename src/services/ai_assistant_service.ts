@@ -4,10 +4,11 @@ import Test, { ITest } from "../models/Test";
 import Question, { IQuestion } from "../models/Question";
 import { IUser } from "../models/User";
 import { IStudentProfile } from "../models/StudentProfile";
+import { TEST_CONFIG, resolveQuestionCount } from "../config/test_config";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.6-flash";
 
 export interface PYQQuestionPayload {
   testId: string;
@@ -239,6 +240,7 @@ export function inferSubjectFromTopic(topic: string): string {
   }
   if (
     t.includes("newton") || t.includes("force") || t.includes("motion") ||
+    t.includes("thermo") || t.includes("heat") || t.includes("temperature") ||
     t.includes("gravity") || t.includes("gravitation") || t.includes("electric") ||
     t.includes("circuit") || t.includes("current") || t.includes("voltage") ||
     t.includes("resistance") || t.includes("ohm") || t.includes("light") ||
@@ -272,6 +274,76 @@ export function inferSubjectFromTopic(topic: string): string {
 }
 
 /**
+ * Extracts question count from natural language if specified by the user.
+ * Supports:
+ * - "10 questions", "15 questions", "20 practice questions", "10 mcqs"
+ * - "maximum 10", "max 20", "at most 15", "up to 10", "no more than 10", "limit to 10"
+ * - "10 questions max", "20 questions maximum"
+ * - "test with 15 questions", "quiz of 20 questions"
+ * - "15 question test", "10 mcq test"
+ * - Word numbers: "five questions", "ten questions", "fifteen questions", "twenty questions"
+ */
+export function extractRequestedQuestionCount(text: string): number | null {
+  const lower = text.toLowerCase();
+
+  // 1. "maximum 10", "max 15", "at most 20", "up to 10", "no more than 10", "limit 15"
+  const maxMatch = lower.match(
+    /\b(?:maximum|max|at most|up to|no more than|limit(?:\s+to)?)\s*[:=]?\s*(\d+)\b/i
+  );
+  if (maxMatch) {
+    return parseInt(maxMatch[1], 10);
+  }
+
+  // 2. "10 questions max", "15 questions maximum", "20 questions at most"
+  const trailingMaxMatch = lower.match(
+    /\b(\d+)\s*(?:practice\s+)?(?:questions?|mcqs?)\s*(?:maximum|max|at most)\b/i
+  );
+  if (trailingMaxMatch) {
+    return parseInt(trailingMaxMatch[1], 10);
+  }
+
+  // 3. "test with 15 questions", "quiz of 20 questions"
+  const testWithMatch = lower.match(
+    /\b(?:test|quiz|exam)\s+(?:with|of|having)\s+(\d+)\s+(?:practice\s+)?(?:questions?|mcqs?)\b/i
+  );
+  if (testWithMatch) {
+    return parseInt(testWithMatch[1], 10);
+  }
+
+  // 4. "15 question test", "20 question quiz"
+  const questionTestMatch = lower.match(
+    /\b(\d+)\s+(?:practice\s+)?(?:question|mcq)\s+(?:test|quiz|exam)\b/i
+  );
+  if (questionTestMatch) {
+    return parseInt(questionTestMatch[1], 10);
+  }
+
+  // 5. Standard digit count: "10 questions", "15 practice questions", "20 mcqs", "100 questions"
+  const standardMatch = lower.match(
+    /\b(\d+)\s+(?:practice\s+)?(?:questions?|mcqs?)\b/i
+  );
+  if (standardMatch) {
+    return parseInt(standardMatch[1], 10);
+  }
+
+  // 6. Word numbers: "five questions", "ten questions", "fifteen questions", "twenty questions"
+  const wordMap: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+    sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  };
+  const wordMatch = lower.match(
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(?:practice\s+)?(?:questions?|mcqs?)\b/i
+  );
+  if (wordMatch && wordMap[wordMatch[1]]) {
+    return wordMap[wordMatch[1]];
+  }
+
+  return null;
+}
+
+/**
  * Detects if the user wants questions generated on a specific topic.
  */
 export function detectQuestionGenerationRequest(message: string): {
@@ -283,15 +355,21 @@ export function detectQuestionGenerationRequest(message: string): {
   const text = message.trim();
   const lower = text.toLowerCase();
 
-  // 1. Extract question count if specified (e.g., "5 questions", "3 questions")
-  let count = 5;
-  const countMatch = lower.match(/\b([1-9]|10)\s+questions?\b/);
-  if (countMatch) {
-    count = parseInt(countMatch[1], 10);
-  }
+  // 1. Extract and programmatically clamp question count using centralized config
+  const rawParsedCount = extractRequestedQuestionCount(text);
+  const count = resolveQuestionCount(rawParsedCount);
 
   // 2. Pattern matching for topic extraction
   const patterns: RegExp[] = [
+    // "create a test with 15 questions on Thermodynamics" / "generate a quiz with 10 questions on X"
+    /(?:create|generate|make|build|give\s+me|set\s+up)\s+(?:a|an)?\s*(?:practice\s+)?(?:test|quiz|exam)\s+(?:with|of|having)\s+(?:\d+\s+)?(?:practice\s+)?questions?\s+(?:about|on|for|regarding|from|in|of)\s+(.+)/i,
+
+    // "create a test on Thermodynamics" / "generate a test about Thermodynamics"
+    /(?:create|generate|make|build|give\s+me|set\s+up)\s+(?:a|an)?\s*(?:practice\s+)?(?:test|quiz|exam)\s+(?:about|on|for|regarding|from|in|of)\s+(.+)/i,
+
+    // "10 questions on Thermodynamics" / "15 practice questions about X"
+    /^(?:\d+|some)\s+(?:practice\s+)?questions?\s+(?:about|on|for|regarding|from|in|of)\s+(.+)/i,
+
     // "provide me questions about double displacement reaction"
     // "give me 5 questions on Newton's laws"
     // "provide questions on photosynthesis"
@@ -351,6 +429,9 @@ export function detectQuestionGenerationRequest(message: string): {
   if (extractedTopic) {
     let cleaned = extractedTopic
       .replace(/[?.!]+$/, "")
+      // Remove trailing limit clauses like ", maximum 10", "max 10", "at most 20", "(max 10)", ", up to 15 questions"
+      .replace(/[,;]?\s*(?:\([^\)]*\)|\[[^\]]*\])?\s*(?:maximum|max|at most|no more than|up to|limit(?:\s+to)?)\s*[:=]?\s*\d+.*$/i, "")
+      .replace(/[,;]?\s*\d+\s*(?:practice\s+)?(?:questions?|mcqs?)?\s*(?:maximum|max|at most).*$/i, "")
       .replace(/\s*(please|now|today|for exam|for board exam|for class \d+)$/i, "")
       .replace(/^(the|a|an|some)\s+/i, "")
       .trim();
@@ -369,7 +450,7 @@ export function detectQuestionGenerationRequest(message: string): {
   return {
     isQuestionGen: false,
     topic: "",
-    count: 5,
+    count: TEST_CONFIG.DEFAULT_QUESTION_COUNT,
   };
 }
 
@@ -823,51 +904,86 @@ const CURATED_QUESTION_SETS: Record<string, InteractiveQuestionItem[]> = {
   ],
 };
 
+
 /**
- * Algorithmic fallback generator when offline or topic is not in curated bank
+ * Validates the structure and content of a single generated question item.
  */
-function generateFallbackQuestions(
-  topic: string,
-  count: number,
-  subject: string,
-  board: string,
-  classLevel: string
-): InteractiveQuestionItem[] {
-  const normKey = topic.toLowerCase().replace(/[^a-z0-9]/g, "");
-  for (const [k, questions] of Object.entries(CURATED_QUESTION_SETS)) {
-    if (normKey.includes(k) || k.includes(normKey)) {
-      return questions.slice(0, count);
+function validateGeneratedQuestion(
+  item: any,
+  topic: string
+): InteractiveQuestionItem | null {
+  if (!item || typeof item !== "object") return null;
+  if (
+    !item.question ||
+    typeof item.question !== "string" ||
+    item.question.trim().length < 5
+  ) {
+    return null;
+  }
+  if (!Array.isArray(item.options) || item.options.length !== 4) return null;
+
+  const validOptions: Array<{ id: "A" | "B" | "C" | "D"; text: string }> = [];
+  const requiredIds: Array<"A" | "B" | "C" | "D"> = ["A", "B", "C", "D"];
+  for (const optId of requiredIds) {
+    const opt = item.options.find(
+      (o: any) => o && String(o.id).trim().toUpperCase() === optId
+    );
+    if (!opt || typeof opt.text !== "string" || opt.text.trim().length === 0) {
+      return null;
     }
+    validOptions.push({ id: optId, text: opt.text.trim() });
   }
 
-  const items: InteractiveQuestionItem[] = [];
-  const difficultyLevels: Array<"Easy" | "Medium" | "Hard"> = ["Easy", "Easy", "Medium", "Medium", "Hard"];
-
-  for (let i = 0; i < count; i++) {
-    const diff = difficultyLevels[i % difficultyLevels.length];
-    items.push({
-      id: i + 1,
-      question: `Regarding ${topic} in ${board} ${classLevel} ${subject}, which of the following statements represents the fundamental scientific principle?`,
-      options: [
-        { id: "A", text: `It represents a constant equilibrium governed by standard ${subject} laws` },
-        { id: "B", text: `It directly governs the characteristic behavior and reaction rate in syllabus models` },
-        { id: "C", text: `It functions independently of standard physical and chemical constraints` },
-        { id: "D", text: `It is only applicable in theoretical non-realizable conditions` },
-      ],
-      correctAnswer: "B",
-      explanation: `In ${subject}, ${topic} is defined by its governing relationship in syllabus curriculum models, tested frequently in examinations.`,
-      hint: `Recall the core definition and textbook laws related to ${topic}.`,
-      difficulty: diff,
-      marks: 1,
-      topic,
-    });
+  const rawCorrect = String(item.correctAnswer || "").trim().toUpperCase();
+  if (!["A", "B", "C", "D"].includes(rawCorrect)) {
+    return null;
   }
+  const correctAnswer = rawCorrect as "A" | "B" | "C" | "D";
 
-  return items;
+  return {
+    id: 1, // Normalized subsequently
+    question: item.question.trim(),
+    options: validOptions,
+    correctAnswer,
+    explanation:
+      typeof item.explanation === "string" && item.explanation.trim().length > 0
+        ? item.explanation.trim()
+        : `Option ${correctAnswer} is correct based on core principles of ${topic}.`,
+    hint:
+      typeof item.hint === "string" && item.hint.trim().length > 0
+        ? item.hint.trim()
+        : `Review fundamental textbook definitions and principles concerning ${topic}.`,
+    difficulty: ["Easy", "Medium", "Hard"].includes(item.difficulty)
+      ? item.difficulty
+      : "Medium",
+    marks: 1,
+    topic,
+  };
 }
 
 /**
- * Generates an interactive question set using Gemini 2.5 Flash with fallback
+ * Checks whether the requested topic strictly matches a curated question set.
+ * Prevents injecting unrelated questions into a topic-specific test.
+ */
+function findMatchingCuratedSet(topic: string): InteractiveQuestionItem[] | null {
+  const normTopic = topic.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const [key, set] of Object.entries(CURATED_QUESTION_SETS)) {
+    const normKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normTopic.includes(normKey) || (normKey.length >= 8 && normKey.includes(normTopic))) {
+      return set;
+    }
+  }
+  return null;
+}
+
+/**
+ * Generates an interactive question set strictly aligned with the requested topic.
+ * - Programmatically enforces requested count (clamped to application maximum).
+ * - Instructs Gemini to produce exactly the requested count.
+ * - Validates each question structure and eliminates duplicates.
+ * - If fewer questions than requested are returned, retries specifically for the missing count.
+ * - Never blindly pads with unrelated topics.
+ * - Uses curated bank only if topic is confirmed to match.
  */
 async function generateQuestionSet(
   topic: string,
@@ -876,17 +992,28 @@ async function generateQuestionSet(
   board: string,
   classLevel: string
 ): Promise<InteractiveQuestionItem[]> {
-  const normKey = topic.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const validQuestions: InteractiveQuestionItem[] = [];
+  const seenQuestions = new Set<string>();
+
+  const addValidQuestion = (item: any): boolean => {
+    const valid = validateGeneratedQuestion(item, topic);
+    if (!valid) return false;
+    const norm = valid.question.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (seenQuestions.has(norm)) return false;
+    seenQuestions.add(norm);
+    validQuestions.push(valid);
+    return true;
+  };
 
   // 1. If Gemini AI is available, generate dynamically
   if (ai) {
     const prompt = `You are a certified senior examiner for ${board} ${classLevel} ${subject}.
-The student requests interactive practice questions on the topic: "${topic}".
+The student requests interactive practice questions strictly on the topic: "${topic}".
 
 Generate exactly ${count} curriculum-aligned Multiple Choice Questions (MCQs) for this topic.
 
 Strict requirements:
-1. Questions must test core understanding of "${topic}".
+1. All questions must test core understanding of "${topic}". Do NOT generate questions on unrelated topics.
 2. Provide exactly 4 mutually exclusive options labeled A, B, C, D for each question.
 3. Mark the single correct option (A, B, C, or D).
 4. Provide a step-by-step pedagogical explanation explaining why the correct option is right and the others are wrong.
@@ -922,48 +1049,98 @@ Return ONLY a valid JSON array of ${count} objects (no markdown, no backticks, n
       const parsed = JSON.parse(cleanJsonString(raw));
 
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const validList: InteractiveQuestionItem[] = [];
-        for (let i = 0; i < parsed.length; i++) {
-          const item = parsed[i];
-          if (
-            item &&
-            item.question &&
-            Array.isArray(item.options) &&
-            item.options.length === 4 &&
-            ["A", "B", "C", "D"].includes(item.correctAnswer)
-          ) {
-            validList.push({
-              id: i + 1,
-              question: item.question,
-              options: item.options,
-              correctAnswer: item.correctAnswer,
-              explanation: item.explanation || "Correct based on curriculum principles.",
-              hint: item.hint || "Review standard textbook principles for this topic.",
-              difficulty: item.difficulty || "Medium",
-              marks: 1,
-              topic,
-            });
-          }
-        }
-
-        if (validList.length >= Math.min(3, count)) {
-          return validList.slice(0, count);
+        for (const item of parsed) {
+          if (validQuestions.length >= count) break;
+          addValidQuestion(item);
         }
       }
     } catch (err) {
-      console.warn("Gemini question set generation error, falling back to curated question bank:", err);
+      console.warn("Gemini question set generation error:", err);
+    }
+
+    // 2. Retry missing questions if Gemini returned fewer valid questions than requested
+    let retries = 0;
+    while (
+      validQuestions.length < count &&
+      retries < TEST_CONFIG.MAX_GENERATION_RETRIES
+    ) {
+      retries++;
+      const missing = count - validQuestions.length;
+      console.log(
+        `[generateQuestionSet] Have ${validQuestions.length}/${count} questions for "${topic}". Retrying for ${missing} remaining questions (attempt ${retries}/${TEST_CONFIG.MAX_GENERATION_RETRIES}).`
+      );
+
+      const retryPrompt = `You are a certified senior examiner for ${board} ${classLevel} ${subject}.
+The student requests additional practice questions strictly on the topic: "${topic}".
+
+We currently have ${validQuestions.length} questions. Please generate exactly ${missing} ADDITIONAL, NEW, and UNIQUE Multiple Choice Questions (MCQs) specifically testing "${topic}".
+Do NOT duplicate any of these existing questions:
+${validQuestions.slice(-5).map((q, idx) => `${idx + 1}. ${q.question.slice(0, 100)}`).join("\n")}
+
+Strict requirements:
+1. All questions must test core concepts of "${topic}". Do NOT generate questions on unrelated topics.
+2. Provide exactly 4 mutually exclusive options labeled A, B, C, D for each question.
+3. Mark the single correct option (A, B, C, or D).
+4. Provide an educational explanation and hint.
+5. Set difficulty to "Easy", "Medium", or "Hard".
+6. Board curriculum aligned for ${board} ${classLevel}.
+
+Return ONLY a valid JSON array of ${missing} objects (no markdown, no backticks, no wrapping text):
+[
+  {
+    "id": 1,
+    "question": "Question text?",
+    "options": [
+      { "id": "A", "text": "Option A" },
+      { "id": "B", "text": "Option B" },
+      { "id": "C", "text": "Option C" },
+      { "id": "D", "text": "Option D" }
+    ],
+    "correctAnswer": "B",
+    "explanation": "Explanation.",
+    "hint": "Hint.",
+    "difficulty": "Medium"
+  }
+]`;
+
+      try {
+        const retryResponse = await ai.models.generateContent({
+          model: DEFAULT_MODEL,
+          contents: retryPrompt,
+        });
+        const raw = retryResponse.text || "";
+        const parsed = JSON.parse(cleanJsonString(raw));
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (validQuestions.length >= count) break;
+            addValidQuestion(item);
+          }
+        }
+      } catch (retryErr) {
+        console.warn(`[generateQuestionSet] Retry ${retries} failed:`, retryErr);
+        break;
+      }
     }
   }
 
-  // 2. Check Curated Question Bank
-  for (const [key, set] of Object.entries(CURATED_QUESTION_SETS)) {
-    if (normKey.includes(key) || key.includes(normKey)) {
-      return set.slice(0, count);
+  // 3. Check Curated Question Bank ONLY if topic strictly matches confirmed curriculum set
+  if (validQuestions.length < count) {
+    const curatedSet = findMatchingCuratedSet(topic);
+    if (curatedSet) {
+      for (const q of curatedSet) {
+        if (validQuestions.length >= count) break;
+        addValidQuestion(q);
+      }
     }
   }
 
-  // 3. Dynamic Algorithmic Fallback
-  return generateFallbackQuestions(topic, count, subject, board, classLevel);
+  // 4. Do NOT pad with unrelated fallback questions. Return validated topic-aligned questions.
+  const finalQuestions = validQuestions.slice(0, count);
+  finalQuestions.forEach((q, idx) => {
+    q.id = idx + 1;
+  });
+
+  return finalQuestions;
 }
 
 /**
@@ -1100,25 +1277,43 @@ export async function processAIChatQuery(params: AIChatParams): Promise<AIChatRe
   // === 2. QUESTION GENERATION REQUEST ===
   if (detected.intent === "QUESTION_GENERATION" && detected.questionGen) {
     const topic = detected.questionGen.topic;
-    const count = detected.questionGen.count || 5;
+    const count = resolveQuestionCount(detected.questionGen.count);
     const subject = detected.questionGen.subject || inferSubjectFromTopic(topic);
     const board = studentBoard;
     const classLevel = studentClass;
 
     const questions = await generateQuestionSet(topic, count, subject, board, classLevel);
 
+    // Validate the final question array before creating the Test record
+    const validatedQuestions = (questions || []).filter(
+      (q) =>
+        q &&
+        typeof q.question === "string" &&
+        q.question.trim().length >= 5 &&
+        Array.isArray(q.options) &&
+        q.options.length === 4 &&
+        ["A", "B", "C", "D"].includes(q.correctAnswer)
+    );
+
+    if (validatedQuestions.length === 0) {
+      return {
+        reply: `I was unable to generate verified practice questions specifically for **"${topic}"** right now. Please try again with another topic or check your connection.`,
+        intent: "QUESTION_GENERATION",
+      };
+    }
+
     let testId = `quiz_${Date.now()}`;
     try {
       const testTitle = `${board} ${classLevel} ${subject}: ${topic} Practice Quiz`;
       const testDoc = new Test({
         title: testTitle,
-        description: `Interactive practice quiz on "${topic}" with ${questions.length} questions (Untimed Practice Mode).`,
+        description: `Interactive practice quiz on "${topic}" with ${validatedQuestions.length} questions (Untimed Practice Mode).`,
         subject,
         board,
         classLevel,
         durationMinutes: 0,
-        totalMarks: questions.length,
-        passingMarks: Math.ceil(questions.length * 0.6),
+        totalMarks: validatedQuestions.length,
+        passingMarks: Math.ceil(validatedQuestions.length * 0.6),
         isLocked: false,
         category: "Practice Quiz",
         status: "published",
@@ -1131,8 +1326,8 @@ export async function processAIChatQuery(params: AIChatParams): Promise<AIChatRe
       });
       await testDoc.save();
 
-      for (let i = 0; i < questions.length; i++) {
-        const q = questions[i];
+      for (let i = 0; i < validatedQuestions.length; i++) {
+        const q = validatedQuestions[i];
         const newQuestion = new Question({
           testId: testDoc._id,
           question: q.question,
@@ -1158,7 +1353,10 @@ export async function processAIChatQuery(params: AIChatParams): Promise<AIChatRe
       console.warn("MongoDB quiz persistence warning, using local session ID:", dbErr);
     }
 
-    const reply = `Here are **${questions.length} interactive practice questions** on **${topic}** for **${board} ${classLevel} ${subject}**. Select your answers below to test your understanding!`;
+    const reply =
+      validatedQuestions.length >= count
+        ? `Here are **${validatedQuestions.length} interactive practice questions** on **${topic}** for **${board} ${classLevel} ${subject}**. Select your answers below to test your understanding!`
+        : `I was able to generate **${validatedQuestions.length} verified practice questions** specifically on **${topic}** for **${board} ${classLevel} ${subject}** (fewer than the requested ${count} could be reliably generated for this topic without adding unrelated questions). Select your answers below to test your understanding!`;
 
     return {
       reply,
@@ -1171,7 +1369,7 @@ export async function processAIChatQuery(params: AIChatParams): Promise<AIChatRe
         subject,
         board,
         classLevel,
-        questions,
+        questions: validatedQuestions,
       },
     };
   }
@@ -1577,9 +1775,9 @@ $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
   // === DEFAULT SMART ACADEMIC EXPLAINER ===
   const cleanSubject =
     q.includes("math") ? "Mathematics" :
-    q.includes("chem") ? "Chemistry" :
-    q.includes("bio") ? "Biology" :
-    "Science & Physics";
+      q.includes("chem") ? "Chemistry" :
+        q.includes("bio") ? "Biology" :
+          "Science & Physics";
 
   return `### 📚 Concept Breakdown: "${message}"
 

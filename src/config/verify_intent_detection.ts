@@ -24,7 +24,7 @@ const TEST_CASES: IntentTestCase[] = [
     query: "provide me questions about double displacement reaction",
     expectedIntent: "QUESTION_GENERATION",
     expectedTopic: "double displacement reaction",
-    expectedCount: 5,
+    expectedCount: 10, // Default when unspecified
   },
   {
     query: "give me 5 questions on Newton's laws",
@@ -36,32 +36,72 @@ const TEST_CASES: IntentTestCase[] = [
     query: "quiz me on photosynthesis",
     expectedIntent: "QUESTION_GENERATION",
     expectedTopic: "photosynthesis",
-    expectedCount: 5,
+    expectedCount: 10, // Default when unspecified
   },
   {
     query: "Give me 2023 CBSE Science PYQ",
     expectedIntent: "PYQ",
   },
+  // User examples
+  {
+    query: "Give me 10 questions on Thermodynamics",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 10,
+  },
+  {
+    query: "Create a test with 15 questions on Thermodynamics",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 15,
+  },
+  {
+    query: "Give me 20 questions on Thermodynamics",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 20,
+  },
+  {
+    query: "Give me questions on Thermodynamics, maximum 10",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 10,
+  },
+  {
+    query: "Give me 30 questions on Thermodynamics",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 20, // Programmatically capped at MAX_QUESTION_COUNT (20)
+  },
+  {
+    query: "Give me 100 questions on Thermodynamics",
+    expectedIntent: "QUESTION_GENERATION",
+    expectedTopic: "Thermodynamics",
+    expectedCount: 20, // Programmatically capped at MAX_QUESTION_COUNT (20)
+  },
   // Additional natural variations
   {
     query: "give me some questions",
     expectedIntent: "QUESTION_GENERATION",
-    expectedCount: 5,
+    expectedCount: 10, // Default when unspecified
   },
   {
     query: "practice questions for chemical reactions",
     expectedIntent: "QUESTION_GENERATION",
     expectedTopic: "chemical reactions",
+    expectedCount: 10,
   },
   {
     query: "can you ask me photosynthesis questions",
     expectedIntent: "QUESTION_GENERATION",
     expectedTopic: "photosynthesis",
+    expectedCount: 10,
   },
   {
     query: "I want to practice quadratic equations",
     expectedIntent: "QUESTION_GENERATION",
     expectedTopic: "quadratic equations",
+    expectedCount: 10,
   },
   {
     query: "What is photosynthesis?",
@@ -127,12 +167,54 @@ for (let i = 0; i < TEST_CASES.length; i++) {
 }
 
 console.log("\n=================================================");
+console.log("    ADDITIONAL CONFIG & ISOLATION CHECKS         ");
+console.log("=================================================\n");
+
+import { resolveQuestionCount, TEST_CONFIG } from "./test_config";
+
+// 1. Check default count
+if (resolveQuestionCount() === 10) {
+  passed++;
+  console.log("[PASS] resolveQuestionCount() defaults to 10");
+} else {
+  failed++;
+  console.error(`[FAIL] resolveQuestionCount() expected 10, got ${resolveQuestionCount()}`);
+}
+
+// 2. Check within-limit counts
+if (resolveQuestionCount(15) === 15 && resolveQuestionCount(20) === 20 && resolveQuestionCount(5) === 5) {
+  passed++;
+  console.log("[PASS] resolveQuestionCount(5, 15, 20) preserves valid counts <= 20");
+} else {
+  failed++;
+  console.error("[FAIL] resolveQuestionCount() did not preserve count <= 20");
+}
+
+// 3. Check upper limit cap
+if (resolveQuestionCount(30) === 20 && resolveQuestionCount(100) === 20) {
+  passed++;
+  console.log("[PASS] resolveQuestionCount(30, 100) programmatically caps at 20");
+} else {
+  failed++;
+  console.error("[FAIL] resolveQuestionCount() failed to cap at 20");
+}
+
+// 4. Check negative or invalid values
+if (resolveQuestionCount(-5) === 10 && resolveQuestionCount(0) === 10 && resolveQuestionCount(NaN) === 10) {
+  passed++;
+  console.log("[PASS] resolveQuestionCount(<=0, NaN) safely falls back to default 10");
+} else {
+  failed++;
+  console.error("[FAIL] resolveQuestionCount(invalid) fallback failed");
+}
+
+console.log("\n=================================================");
 console.log(`Results: ${passed} Passed, ${failed} Failed`);
 console.log("=================================================");
 
 if (failed > 0) {
   process.exit(1);
 } else {
-  console.log("ALL INTENT DETECTION TESTS PASSED SUCCESSFULLY! ✨");
+  console.log("ALL INTENT DETECTION & CONFIG TESTS PASSED SUCCESSFULLY! ✨");
   process.exit(0);
 }

@@ -1,5 +1,11 @@
 import User from "../models/User";
-import StudentProfile from "../models/StudentProfile";
+import StudentProfile, {
+  IUndergraduateDetails,
+  IPostgraduateDetails,
+  ICompetitiveExamDetails,
+  ISchoolDetails,
+  EducationLevel,
+} from "../models/StudentProfile";
 
 interface CreateStudentData {
   email: string;
@@ -8,20 +14,21 @@ interface CreateStudentData {
   language?: string;
   goal?: string;
   phone?: string;
+  learningPath?: string;
 
   education?: {
-    level?:
-      | "school"
-      | "undergraduate"
-      | "postgraduate"
-      | "professional"
-      | "other";
+    level?: EducationLevel;
     board?: string;
     classLevel?: string;
     degree?: string;
     specialization?: string;
     institution?: string;
   };
+
+  schoolDetails?: ISchoolDetails;
+  undergraduateDetails?: IUndergraduateDetails;
+  postgraduateDetails?: IPostgraduateDetails;
+  competitiveExamDetails?: ICompetitiveExamDetails;
 }
 
 export interface UpdateStudentData {
@@ -35,12 +42,7 @@ export interface UpdateStudentData {
   language?: string;
 
   education?: {
-    level?:
-      | "school"
-      | "undergraduate"
-      | "postgraduate"
-      | "professional"
-      | "other";
+    level?: EducationLevel;
     board?: string;
     classLevel?: string;
     degree?: string;
@@ -48,16 +50,10 @@ export interface UpdateStudentData {
     institution?: string;
   };
 
-  schoolDetails?: {
-    schoolName?: string;
-    board?: string;
-    classLevel?: string;
-    studyMode?: string;
-    selectedSubject?: string;
-    customSubject?: string;
-    syllabusFileName?: string;
-    textbookFileName?: string;
-  };
+  schoolDetails?: ISchoolDetails;
+  undergraduateDetails?: IUndergraduateDetails;
+  postgraduateDetails?: IPostgraduateDetails;
+  competitiveExamDetails?: ICompetitiveExamDetails;
 }
 
 export const createStudent = async (data: CreateStudentData) => {
@@ -81,7 +77,12 @@ export const createStudent = async (data: CreateStudentData) => {
       name: data.name,
       phone: data.phone,
       goal: data.goal,
+      learningPath: data.learningPath || "school",
       education: data.education,
+      schoolDetails: data.schoolDetails,
+      undergraduateDetails: data.undergraduateDetails,
+      postgraduateDetails: data.postgraduateDetails,
+      competitiveExamDetails: data.competitiveExamDetails,
     });
 
     return {
@@ -169,6 +170,18 @@ export const updateStudent = async (
 
   if (data.schoolDetails !== undefined) {
     studentUpdate.schoolDetails = data.schoolDetails;
+  }
+
+  if (data.undergraduateDetails !== undefined) {
+    studentUpdate.undergraduateDetails = data.undergraduateDetails;
+  }
+
+  if (data.postgraduateDetails !== undefined) {
+    studentUpdate.postgraduateDetails = data.postgraduateDetails;
+  }
+
+  if (data.competitiveExamDetails !== undefined) {
+    studentUpdate.competitiveExamDetails = data.competitiveExamDetails;
   }
 
   // First confirm that the student profile exists.

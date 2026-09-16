@@ -9,11 +9,12 @@ export interface TestFilterOptions {
   subject?: string;
   isLocked?: boolean;
   search?: string;
+  studentProfileId?: string;
 }
 
 export interface SubmitTestInput {
   attemptId?: string;
-  answers: Record<string, string>; // questionId or questionIndex -> selectedOption ('A', 'B', etc.)
+  answers: Record<string, string | number>; // questionId or questionIndex -> selectedOption or numerical answer
   statusByQuestion?: Record<string, QuestionAttemptStatus>;
   timeSpentSeconds: number;
 }
@@ -24,12 +25,27 @@ export interface SubmitTestInput {
 export const listTests = async (filters: TestFilterOptions = {}) => {
   const query: Record<string, any> = { status: "published" };
 
-  if (filters.board) {
-    query.board = new RegExp(`^${filters.board.trim()}$`, "i");
-  }
+  if (filters.studentProfileId && mongoose.Types.ObjectId.isValid(filters.studentProfileId)) {
+    const profileObjId = new mongoose.Types.ObjectId(filters.studentProfileId);
+    if (filters.board && filters.classLevel) {
+      query.$or = [
+        { studentProfileId: profileObjId },
+        {
+          board: new RegExp(`^${filters.board.trim()}$`, "i"),
+          classLevel: new RegExp(`^${filters.classLevel.trim()}$`, "i"),
+        },
+      ];
+    } else {
+      query.studentProfileId = profileObjId;
+    }
+  } else {
+    if (filters.board) {
+      query.board = new RegExp(`^${filters.board.trim()}$`, "i");
+    }
 
-  if (filters.classLevel) {
-    query.classLevel = new RegExp(`^${filters.classLevel.trim()}$`, "i");
+    if (filters.classLevel) {
+      query.classLevel = new RegExp(`^${filters.classLevel.trim()}$`, "i");
+    }
   }
 
   if (filters.subject) {
@@ -51,7 +67,7 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
   const tests = await Test.find(query)
     .populate({
       path: "questions",
-      select: "order marks subject",
+      select: "order marks subject questionType",
     })
     .sort({ isLocked: 1, createdAt: -1 })
     .lean();
@@ -70,6 +86,11 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
     isLocked: t.isLocked,
     category: t.category,
     status: t.status,
+    isCompetitiveExam: t.isCompetitiveExam || false,
+    examCategory: t.examCategory,
+    examCode: t.examCode,
+    isPYQ: t.isPYQ || false,
+    pyqYear: t.pyqYear,
     createdAt: t.createdAt,
   }));
 };
@@ -93,19 +114,69 @@ export const getTestById = async (testId: string, maskAnswers = false) => {
     throw new Error("Test not found");
   }
 
+  // Build lookup from test.sections for questionId -> section info
+  const questionSectionLookup = new Map<string, { sectionId: string; sectionName: string; subject?: string }>();
+  if (Array.isArray(test.sections)) {
+    for (const sec of test.sections) {
+      if (Array.isArray(sec.questionIds)) {
+        for (const qid of sec.questionIds) {
+          questionSectionLookup.set(qid.toString(), {
+            sectionId: sec.id,
+            sectionName: sec.name,
+            subject: sec.subject,
+          });
+        }
+      }
+    }
+  }
+
+  const hasDefinedSections = Array.isArray(test.sections) && test.sections.length > 0;
+
   const questions = (test.questions || []).map((q, idx) => {
     const qObj = q.toObject ? q.toObject() : q;
+    const qIdStr = qObj._id ? qObj._id.toString() : "";
+    const secInfo = questionSectionLookup.get(qIdStr);
+
+    let resolvedSectionId = qObj.sectionId || secInfo?.sectionId;
+    let resolvedSectionName = qObj.sectionName || secInfo?.sectionName;
+
+    if (hasDefinedSections && !resolvedSectionId) {
+      const match = test.sections!.find((s) => {
+        const matchesSubject = s.subject.toLowerCase() === (qObj.subject || "").toLowerCase();
+        const isNat = qObj.questionType === "nat";
+        const secIsNat = s.id.toLowerCase().includes("nat") || s.name.toLowerCase().includes("nat");
+        return matchesSubject && (isNat ? secIsNat : !secIsNat);
+      }) || test.sections!.find((s) =>
+        s.subject.toLowerCase() === (qObj.subject || "").toLowerCase()
+      ) || test.sections![0];
+
+      resolvedSectionId = match.id;
+      resolvedSectionName = match.name;
+    }
+
     return {
       _id: qObj._id,
       id: idx + 1,
-      questionId: qObj._id.toString(),
+      questionId: qObj._id ? qObj._id.toString() : "",
       question: qObj.question,
       sidebarTitle: qObj.sidebarTitle || qObj.question.slice(0, 50),
-      options: qObj.options,
+      questionType: qObj.questionType || "mcq",
+      options: qObj.options || [],
       marks: qObj.marks || 1,
+      negativeMarks: qObj.negativeMarks || 0,
+      numericalTolerance: qObj.numericalTolerance,
       order: qObj.order || idx + 1,
+      sectionId: resolvedSectionId,
+      sectionName: resolvedSectionName,
+      subject: qObj.subject || secInfo?.subject,
+      sourceType: qObj.sourceType,
+      sourceYear: qObj.sourceYear,
+      sourceExam: qObj.sourceExam,
+      sourceShift: qObj.sourceShift,
+      sourceReference: qObj.sourceReference,
       // Hide answers if in active test taking mode
       correctAnswer: maskAnswers ? undefined : qObj.correctAnswer,
+      numericalAnswer: maskAnswers ? undefined : qObj.numericalAnswer,
       explanation: maskAnswers ? undefined : qObj.explanation,
     };
   });
@@ -123,6 +194,14 @@ export const getTestById = async (testId: string, maskAnswers = false) => {
     totalMarks: test.totalMarks || questions.reduce((sum, q) => sum + (q.marks || 1), 0),
     isLocked: test.isLocked,
     category: test.category,
+    isCompetitiveExam: test.isCompetitiveExam || false,
+    examCategory: test.examCategory,
+    examCode: test.examCode,
+    examTier: test.examTier,
+    sections: test.sections || [],
+    negativeMarkingRate: test.negativeMarkingRate || 0,
+    cutOffScore: test.cutOffScore,
+    totalCandidatesEstimate: test.totalCandidatesEstimate,
     questions,
   };
 };
@@ -262,10 +341,13 @@ export const submitTestAttempt = async (
   const processedAnswers = questions.map((q, idx) => {
     const qIdStr = q._id.toString();
     // Resolve answer by questionId or question index (0, 1, 2...)
-    const selectedOption =
-      submission.answers[qIdStr] ||
-      submission.answers[idx.toString()] ||
+    const rawAnswer =
+      submission.answers[qIdStr] ??
+      submission.answers[idx.toString()] ??
       submission.answers[idx as any];
+
+    const selectedOption =
+      rawAnswer !== undefined && rawAnswer !== null ? String(rawAnswer).trim() : undefined;
 
     const statusFromInput =
       submission.statusByQuestion?.[qIdStr] ||
@@ -275,8 +357,40 @@ export const submitTestAttempt = async (
     const questionMarks = q.marks || 1;
     maxPossibleScore += questionMarks;
 
-    const isAnswerProvided = Boolean(selectedOption && selectedOption.trim());
-    const isCorrect = isAnswerProvided && selectedOption.trim().toUpperCase() === q.correctAnswer.trim().toUpperCase();
+    const isAnswerProvided = Boolean(selectedOption && selectedOption.length > 0);
+    let isCorrect = false;
+
+    if (isAnswerProvided && selectedOption) {
+      if (q.questionType === "nat") {
+        const studentNum = Number(selectedOption);
+        const targetNum =
+          typeof q.numericalAnswer === "number"
+            ? q.numericalAnswer
+            : Number(q.correctAnswer);
+        const tolerance = q.numericalTolerance || 0;
+        isCorrect =
+          !isNaN(studentNum) &&
+          !isNaN(targetNum) &&
+          Math.abs(studentNum - targetNum) <= tolerance;
+      } else {
+        isCorrect =
+          selectedOption.toUpperCase() === q.correctAnswer.trim().toUpperCase();
+      }
+    }
+
+    let marksAwarded = 0;
+    if (isAnswerProvided) {
+      if (isCorrect) {
+        marksAwarded = questionMarks;
+      } else {
+        // Apply negative marking penalty if configured on question or test
+        const penalty =
+          typeof q.negativeMarks === "number" && q.negativeMarks > 0
+            ? q.negativeMarks
+            : test.negativeMarkingRate || 0;
+        marksAwarded = -Math.abs(penalty);
+      }
+    }
 
     let questionStatus: QuestionAttemptStatus = "skipped";
     if (statusFromInput === "revise") {
@@ -286,36 +400,197 @@ export const submitTestAttempt = async (
         attemptedCount += 1;
         if (isCorrect) {
           correctCount += 1;
-          totalScore += questionMarks;
         } else {
           incorrectCount += 1;
         }
+        totalScore += marksAwarded;
       }
     } else if (isAnswerProvided) {
       questionStatus = "attempted";
       attemptedCount += 1;
       if (isCorrect) {
         correctCount += 1;
-        totalScore += questionMarks;
       } else {
         incorrectCount += 1;
       }
+      totalScore += marksAwarded;
     } else {
       skippedCount += 1;
     }
 
     return {
       questionId: q._id,
-      selectedOption: selectedOption ? selectedOption.trim().toUpperCase() : undefined,
+      selectedOption: selectedOption ? selectedOption.toUpperCase() : undefined,
+      numericalAnswer:
+        q.questionType === "nat" && selectedOption && !isNaN(Number(selectedOption))
+          ? Number(selectedOption)
+          : undefined,
+      sectionId: q.sectionId,
       status: questionStatus,
       isCorrect,
-      marksAwarded: isCorrect ? questionMarks : 0,
+      marksAwarded,
       questionData: q,
     };
   });
 
-  const percentage = maxPossibleScore > 0 ? Math.round((totalScore / maxPossibleScore) * 100) : 0;
+  const percentage = maxPossibleScore > 0 ? Math.max(0, Math.round((totalScore / maxPossibleScore) * 100)) : 0;
   const accuracy = attemptedCount > 0 ? Math.round((correctCount / attemptedCount) * 100) : 0;
+
+  // Section-wise breakdown
+  const questionSectionLookup = new Map<string, { sectionId: string; sectionName: string; subject?: string }>();
+  if (Array.isArray(test.sections)) {
+    for (const sec of test.sections) {
+      if (Array.isArray(sec.questionIds)) {
+        for (const qid of sec.questionIds) {
+          questionSectionLookup.set(qid.toString(), {
+            sectionId: sec.id,
+            sectionName: sec.name,
+            subject: sec.subject,
+          });
+        }
+      }
+    }
+  }
+
+  const sectionMap: Record<string, {
+    sectionId: string;
+    sectionName: string;
+    subject: string;
+    attemptedCount: number;
+    correctCount: number;
+    incorrectCount: number;
+    skippedCount: number;
+    score: number;
+    maxScore: number;
+    accuracy: number;
+  }> = {};
+
+  const hasDefinedSections = Boolean(test.sections && test.sections.length > 0);
+
+  if (test.sections && test.sections.length > 0) {
+    for (const sec of test.sections) {
+      sectionMap[sec.id] = {
+        sectionId: sec.id,
+        sectionName: sec.name,
+        subject: sec.subject,
+        attemptedCount: 0,
+        correctCount: 0,
+        incorrectCount: 0,
+        skippedCount: 0,
+        score: 0,
+        maxScore: 0,
+        accuracy: 0,
+      };
+    }
+  }
+
+  for (const item of processedAnswers) {
+    const qIdStr = item.questionData._id ? item.questionData._id.toString() : "";
+    const secInfo = questionSectionLookup.get(qIdStr);
+
+    let secId = item.questionData.sectionId || secInfo?.sectionId;
+
+    if (hasDefinedSections) {
+      // If the question's secId doesn't match one of test.sections, map it to the correct official section
+      if (!secId || !sectionMap[secId]) {
+        const match = test.sections!.find((s) => {
+          const matchesSubject = s.subject.toLowerCase() === (item.questionData.subject || "").toLowerCase();
+          const isNat = item.questionData.questionType === "nat";
+          const secIsNat = s.id.toLowerCase().includes("nat") || s.name.toLowerCase().includes("nat");
+          return matchesSubject && (isNat ? secIsNat : !secIsNat);
+        }) || test.sections!.find((s) =>
+          s.subject.toLowerCase() === (item.questionData.subject || "").toLowerCase()
+        ) || test.sections![0];
+
+        secId = match.id;
+      }
+    } else {
+      if (!secId) {
+        secId = item.questionData.subject || "general";
+      }
+      if (!sectionMap[secId]) {
+        sectionMap[secId] = {
+          sectionId: secId,
+          sectionName: item.questionData.sectionName || item.questionData.subject || "General",
+          subject: item.questionData.subject || "General",
+          attemptedCount: 0,
+          correctCount: 0,
+          incorrectCount: 0,
+          skippedCount: 0,
+          score: 0,
+          maxScore: 0,
+          accuracy: 0,
+        };
+      }
+    }
+
+    const sec = sectionMap[secId];
+    if (sec) {
+      sec.maxScore += item.questionData.marks || 1;
+      if (item.status === "attempted" || item.status === "revise") {
+        if (item.selectedOption !== undefined) {
+          sec.attemptedCount += 1;
+          if (item.isCorrect) {
+            sec.correctCount += 1;
+          } else {
+            sec.incorrectCount += 1;
+          }
+          sec.score += item.marksAwarded;
+        } else {
+          sec.skippedCount += 1;
+        }
+      } else {
+        sec.skippedCount += 1;
+      }
+    }
+  }
+
+  const sectionScores = hasDefinedSections
+    ? test.sections!.map((sec) => {
+        const s = sectionMap[sec.id] || {
+          sectionId: sec.id,
+          sectionName: sec.name,
+          subject: sec.subject,
+          attemptedCount: 0,
+          correctCount: 0,
+          incorrectCount: 0,
+          skippedCount: 0,
+          score: 0,
+          maxScore: 0,
+          accuracy: 0,
+        };
+        return {
+          ...s,
+          accuracy: s.attemptedCount > 0 ? Math.round((s.correctCount / s.attemptedCount) * 100) : 0,
+        };
+      })
+    : Object.values(sectionMap).map((s) => ({
+        ...s,
+        accuracy: s.attemptedCount > 0 ? Math.round((s.correctCount / s.attemptedCount) * 100) : 0,
+      }));
+
+  // Percentile and All India Rank calculation for competitive exams
+  let percentile: number | undefined;
+  let allIndiaRank: number | undefined;
+  const totalCandidates = test.totalCandidatesEstimate || 100000;
+
+  if (test.isCompetitiveExam) {
+    const cutOff = test.cutOffScore || Math.round(maxPossibleScore * 0.4);
+    if (maxPossibleScore > 0) {
+      if (totalScore <= 0) {
+        percentile = 2.5;
+      } else if (totalScore >= maxPossibleScore) {
+        percentile = 99.99;
+      } else {
+        const norm = (totalScore - cutOff) / (maxPossibleScore - cutOff || 1);
+        const sigmoid = 1 / (1 + Math.exp(-3.2 * norm));
+        percentile = Math.min(99.95, Math.max(10.0, Math.round((45 + sigmoid * 54.9) * 100) / 100));
+      }
+    } else {
+      percentile = 50.0;
+    }
+    allIndiaRank = Math.max(1, Math.round(totalCandidates * (1 - percentile / 100)));
+  }
 
   attempt.status = "completed";
   attempt.completedAt = new Date();
@@ -323,6 +598,8 @@ export const submitTestAttempt = async (
   attempt.answers = processedAnswers.map((item) => ({
     questionId: item.questionId,
     selectedOption: item.selectedOption,
+    numericalAnswer: item.numericalAnswer,
+    sectionId: item.sectionId,
     status: item.status,
     isCorrect: item.isCorrect,
     marksAwarded: item.marksAwarded,
@@ -336,6 +613,10 @@ export const submitTestAttempt = async (
   attempt.maxScore = maxPossibleScore;
   attempt.percentage = percentage;
   attempt.accuracy = accuracy;
+  attempt.sectionScores = sectionScores;
+  attempt.percentile = percentile;
+  attempt.allIndiaRank = allIndiaRank;
+  attempt.totalCandidates = totalCandidates;
 
   await attempt.save();
 
@@ -355,19 +636,31 @@ export const submitTestAttempt = async (
     skipped: skippedCount,
     timeSpentSeconds: attempt.timeSpentSeconds,
     completedAt: attempt.completedAt,
+    sectionScores,
+    percentile,
+    allIndiaRank,
+    totalCandidates,
+    isCompetitiveExam: test.isCompetitiveExam || false,
+    examCategory: test.examCategory,
+    examTier: test.examTier,
+    cutOffScore: test.cutOffScore,
     questions: processedAnswers.map((item, idx) => ({
       id: idx + 1,
       questionId: item.questionData._id.toString(),
       question: item.questionData.question,
       sidebarTitle: item.questionData.sidebarTitle || item.questionData.question.slice(0, 50),
+      questionType: item.questionData.questionType || "mcq",
       options: item.questionData.options,
       userAnswer: item.selectedOption,
       correctAnswer: item.questionData.correctAnswer,
+      numericalAnswer: item.questionData.numericalAnswer,
       isCorrect: item.isCorrect,
       marksAwarded: item.marksAwarded,
       marks: item.questionData.marks || 1,
       explanation: item.questionData.explanation,
       status: item.status,
+      sectionId: item.questionData.sectionId,
+      sectionName: item.questionData.sectionName,
     })),
   };
 };
@@ -412,6 +705,14 @@ export const getAttemptAnalysis = async (
     skipped: attempt.skippedCount,
     timeSpentSeconds: attempt.timeSpentSeconds,
     completedAt: attempt.completedAt,
+    sectionScores: attempt.sectionScores || [],
+    percentile: attempt.percentile,
+    allIndiaRank: attempt.allIndiaRank,
+    totalCandidates: attempt.totalCandidates,
+    isCompetitiveExam: test?.isCompetitiveExam || false,
+    examCategory: test?.examCategory,
+    examTier: test?.examTier,
+    cutOffScore: test?.cutOffScore,
     questions: attempt.answers.map((ans, idx) => {
       const q = ans.questionId as unknown as IQuestion;
       return {
@@ -419,13 +720,16 @@ export const getAttemptAnalysis = async (
         questionId: q ? q._id.toString() : "",
         question: q ? q.question : "",
         sidebarTitle: q ? q.sidebarTitle || q.question.slice(0, 50) : "",
+        questionType: q ? q.questionType || "mcq" : "mcq",
         options: q ? q.options : [],
         userAnswer: ans.selectedOption,
         correctAnswer: q ? q.correctAnswer : "",
+        numericalAnswer: q ? q.numericalAnswer : undefined,
         isCorrect: ans.isCorrect,
         marksAwarded: ans.marksAwarded,
         explanation: q ? q.explanation : "",
         status: ans.status,
+        sectionId: ans.sectionId,
       };
     }),
   };

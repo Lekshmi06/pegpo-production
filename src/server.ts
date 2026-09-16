@@ -1,14 +1,15 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import connectDB from "./config/db";
 import studentRoutes from "./routes/student_routes";
 import sourceRoutes from "./routes/source_routes";
 import authRoutes from "./routes/auth_routes";
 import testRoutes from "./routes/test_routes";
 import aiRoutes from "./routes/ai_routes";
+import workspaceRoutes from "./routes/workspace_routes";
+import competitiveRoutes from "./routes/competitive_exam_routes";
 
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -19,6 +20,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/tests", testRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/workspace", workspaceRoutes);
+app.use("/api/competitive", competitiveRoutes);
 app.use("/api", sourceRoutes);
 
 app.get("/", (req, res) => {

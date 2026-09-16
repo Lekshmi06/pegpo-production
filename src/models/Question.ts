@@ -5,14 +5,26 @@ export interface IQuestionOption {
   text: string;
 }
 
+export type QuestionType = "mcq" | "nat" | "descriptive";
+export type QuestionSourceType =
+  | "previous_year"
+  | "curriculum"
+  | "ai_generated"
+  | "teacher"
+  | "system";
+
 export interface IQuestion extends Document {
   testId?: mongoose.Types.ObjectId;
   question: string;
   sidebarTitle?: string;
+  questionType: QuestionType;
   options: IQuestionOption[];
   correctAnswer: string;
+  numericalAnswer?: number;
+  numericalTolerance?: number;
   explanation: string;
   marks: number;
+  negativeMarks?: number;
   order: number;
   subject?: string;
   board?: string;
@@ -22,6 +34,17 @@ export interface IQuestion extends Document {
   topic?: string;
   chapter?: string;
   stepByStepSolution?: string[];
+
+  // PYQ & Competitive exam metadata
+  sourceType: QuestionSourceType;
+  sourceYear?: number;
+  sourceExam?: string; // e.g. "JEE_MAIN", "NEET_UG", "SSC_CGL", "BANKING_IBPS_PO", "UPSC_CSE"
+  sourceShift?: string; // e.g. "27 Jan Shift 1", "Session 1 Morning"
+  sourceReference?: string; // e.g. "JEE Main 2024 Session 1 Q.14"
+  isVerifiedSource?: boolean;
+  sectionId?: string;
+  sectionName?: string;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -58,18 +81,37 @@ const questionSchema = new Schema<IQuestion>(
       type: String,
       trim: true,
     },
+    questionType: {
+      type: String,
+      enum: ["mcq", "nat", "descriptive"],
+      default: "mcq",
+      index: true,
+    },
     options: {
       type: [questionOptionSchema],
-      required: true,
+      default: [],
       validate: [
-        (val: IQuestionOption[]) => val && val.length >= 2,
-        "Question must have at least 2 options",
+        function (this: any, val: IQuestionOption[]) {
+          if (this.questionType === "nat" || this.questionType === "descriptive") {
+            return true;
+          }
+          return Array.isArray(val) && val.length >= 2;
+        },
+        "Multiple choice questions must have at least 2 options",
       ],
     },
     correctAnswer: {
       type: String,
-      required: true,
       trim: true,
+      default: "",
+    },
+    numericalAnswer: {
+      type: Number,
+    },
+    numericalTolerance: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     explanation: {
       type: String,
@@ -81,6 +123,10 @@ const questionSchema = new Schema<IQuestion>(
       default: 1,
       min: 0,
     },
+    negativeMarks: {
+      type: Number,
+      default: 0,
+    },
     order: {
       type: Number,
       default: 1,
@@ -88,6 +134,7 @@ const questionSchema = new Schema<IQuestion>(
     subject: {
       type: String,
       trim: true,
+      index: true,
     },
     board: {
       type: String,
@@ -111,6 +158,7 @@ const questionSchema = new Schema<IQuestion>(
     topic: {
       type: String,
       trim: true,
+      index: true,
     },
     chapter: {
       type: String,
@@ -120,11 +168,53 @@ const questionSchema = new Schema<IQuestion>(
       type: [String],
       default: [],
     },
+
+    // PYQ & Competitive exam metadata
+    sourceType: {
+      type: String,
+      enum: ["previous_year", "curriculum", "ai_generated", "teacher", "system"],
+      default: "curriculum",
+      index: true,
+    },
+    sourceYear: {
+      type: Number,
+      index: true,
+    },
+    sourceExam: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
+    sourceShift: {
+      type: String,
+      trim: true,
+    },
+    sourceReference: {
+      type: String,
+      trim: true,
+    },
+    isVerifiedSource: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    sectionId: {
+      type: String,
+      trim: true,
+    },
+    sectionName: {
+      type: String,
+      trim: true,
+    },
   },
   {
     timestamps: true,
   }
 );
+
+questionSchema.index({ sourceType: 1, sourceExam: 1, sourceYear: 1 });
+questionSchema.index({ sourceType: 1, subject: 1, topic: 1 });
 
 const Question = mongoose.model<IQuestion>("Question", questionSchema);
 

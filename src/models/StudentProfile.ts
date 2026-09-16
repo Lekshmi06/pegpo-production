@@ -4,8 +4,48 @@ export type EducationLevel =
   | "school"
   | "undergraduate"
   | "postgraduate"
+  | "competitive_exam"
   | "professional"
   | "other";
+
+export interface IUndergraduateDetails {
+  institution?: string;
+  degree?: string;
+  specialization?: string;
+  year?: string;
+  semester?: string;
+  university?: string;
+  syllabusFileName?: string;
+}
+
+export interface IPostgraduateDetails {
+  institution?: string;
+  degree?: string;
+  specialization?: string;
+  thesisTopic?: string;
+  researchArea?: string;
+  year?: string;
+  syllabusFileName?: string;
+}
+
+export interface ICompetitiveExamDetails {
+  targetExam?: string;
+  targetYear?: string;
+  category?: string;
+  preparationMode?: string;
+  syllabusFileName?: string;
+}
+
+export interface ISchoolDetails {
+  schoolName?: string;
+  board?: string;
+  classLevel?: string;
+  studyMode?: string;
+  selectedSubject?: string;
+  customSubject?: string;
+  syllabusFileName?: string;
+  textbookFileName?: string;
+}
 
 export interface IStudentProfile extends Document {
   userId: mongoose.Types.ObjectId;
@@ -28,16 +68,10 @@ export interface IStudentProfile extends Document {
     institution?: string;
   };
 
-  schoolDetails?: {
-    schoolName?: string;
-    board?: string;
-    classLevel?: string;
-    studyMode?: string;
-    selectedSubject?: string;
-    customSubject?: string;
-    syllabusFileName?: string;
-    textbookFileName?: string;
-  };
+  schoolDetails?: ISchoolDetails;
+  undergraduateDetails?: IUndergraduateDetails;
+  postgraduateDetails?: IPostgraduateDetails;
+  competitiveExamDetails?: ICompetitiveExamDetails;
 
   createdAt: Date;
   updatedAt: Date;
@@ -97,6 +131,7 @@ const studentProfileSchema = new Schema<IStudentProfile>(
           "school",
           "undergraduate",
           "postgraduate",
+          "competitive_exam",
           "professional",
           "other",
         ],
@@ -129,38 +164,42 @@ const studentProfileSchema = new Schema<IStudentProfile>(
     },
 
     schoolDetails: {
-      schoolName: {
-        type: String,
-        trim: true,
-      },
-      board: {
-        type: String,
-        trim: true,
-      },
-      classLevel: {
-        type: String,
-        trim: true,
-      },
-      studyMode: {
-        type: String,
-        trim: true,
-      },
-      selectedSubject: {
-        type: String,
-        trim: true,
-      },
-      customSubject: {
-        type: String,
-        trim: true,
-      },
-      syllabusFileName: {
-        type: String,
-        trim: true,
-      },
-      textbookFileName: {
-        type: String,
-        trim: true,
-      },
+      schoolName: { type: String, trim: true },
+      board: { type: String, trim: true },
+      classLevel: { type: String, trim: true },
+      studyMode: { type: String, trim: true },
+      selectedSubject: { type: String, trim: true },
+      customSubject: { type: String, trim: true },
+      syllabusFileName: { type: String, trim: true },
+      textbookFileName: { type: String, trim: true },
+    },
+
+    undergraduateDetails: {
+      institution: { type: String, trim: true },
+      degree: { type: String, trim: true },
+      specialization: { type: String, trim: true },
+      year: { type: String, trim: true },
+      semester: { type: String, trim: true },
+      university: { type: String, trim: true },
+      syllabusFileName: { type: String, trim: true },
+    },
+
+    postgraduateDetails: {
+      institution: { type: String, trim: true },
+      degree: { type: String, trim: true },
+      specialization: { type: String, trim: true },
+      thesisTopic: { type: String, trim: true },
+      researchArea: { type: String, trim: true },
+      year: { type: String, trim: true },
+      syllabusFileName: { type: String, trim: true },
+    },
+
+    competitiveExamDetails: {
+      targetExam: { type: String, trim: true },
+      targetYear: { type: String, trim: true },
+      category: { type: String, trim: true },
+      preparationMode: { type: String, trim: true },
+      syllabusFileName: { type: String, trim: true },
     },
   },
   {

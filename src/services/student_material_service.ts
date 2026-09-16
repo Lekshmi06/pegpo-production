@@ -6,6 +6,7 @@ export interface StudentMaterialQuery {
   studentProfileId: string;
   subject?: string;
   textbookFileName?: string;
+  syllabusFileName?: string;
   topic?: string;
   maxChars?: number;
 }
@@ -32,6 +33,7 @@ export async function getRelevantStudentMaterial(
     studentProfileId,
     subject,
     textbookFileName,
+    syllabusFileName,
     topic,
     maxChars = DEFAULT_MAX_CHARS,
   } = query;
@@ -70,7 +72,15 @@ export async function getRelevantStudentMaterial(
     );
   }
 
-  // 2b. Match by requested or profile subject (e.g. "Physics")
+  // 2b. Match specific syllabusFileName if configured on StudentProfile
+  if (!selectedSource && syllabusFileName) {
+    const cleanSyllabus = syllabusFileName.toLowerCase();
+    selectedSource = studentSources.find((s) =>
+      s.originalName.toLowerCase().includes(cleanSyllabus)
+    );
+  }
+
+  // 2c. Match by requested or profile subject (e.g. "Basic Science", "Mathematics")
   if (!selectedSource && subject) {
     const cleanSubject = subject.toLowerCase();
     selectedSource = studentSources.find((s) =>
@@ -78,7 +88,7 @@ export async function getRelevantStudentMaterial(
     );
   }
 
-  // 2c. Fallback to the student's most recently active source
+  // 2d. Fallback to the student's most recently active source (e.g. uploaded syllabus)
   if (!selectedSource) {
     selectedSource = studentSources[0];
   }
@@ -111,11 +121,21 @@ export async function getRelevantStudentMaterial(
 
     if (matchIndex !== -1) {
       // Extract a window around the matched topic
-      const start = Math.max(0, matchIndex - 2000);
+      const start = Math.max(0, matchIndex - 1000);
       const end = Math.min(fullText.length, start + maxChars);
       textSample = fullText.slice(start, end);
     } else {
-      // If topic not literally found, take beginning section up to limit
+      textSample = fullText.slice(0, maxChars);
+    }
+  } else if (subject && subject.trim().length > 0 && subject.toLowerCase() !== "all") {
+    // Locate the subject header in the syllabus document (e.g. "1. Basic Science")
+    const cleanSubj = subject.trim().toLowerCase();
+    const matchIndex = fullText.toLowerCase().indexOf(cleanSubj);
+    if (matchIndex !== -1) {
+      const start = Math.max(0, matchIndex - 200);
+      const end = Math.min(fullText.length, start + maxChars);
+      textSample = fullText.slice(start, end);
+    } else {
       textSample = fullText.slice(0, maxChars);
     }
   } else {
