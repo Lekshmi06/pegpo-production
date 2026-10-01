@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import User from "../models/User";
 
 const connectDB = async (): Promise<void> => {
   try {
@@ -9,6 +10,14 @@ const connectDB = async (): Promise<void> => {
     }
 
     await mongoose.connect(mongoURI);
+
+    // Enforce unique indexes (including email unique index) at the database layer
+    try {
+      await User.init();
+      await User.syncIndexes();
+    } catch (indexErr) {
+      console.warn("User index sync warning:", indexErr);
+    }
 
     console.log("MongoDB connected successfully");
   } catch (error) {

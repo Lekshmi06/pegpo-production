@@ -16,11 +16,22 @@ export const registerController = async (
       message: "User registered successfully",
       data: result,
     });
-  } catch (error) {
-    const message =
+  } catch (error: any) {
+    let message =
       error instanceof Error ? error.message : "Failed to register user";
 
-    const statusCode = message.includes("already exists") ? 409 : 400;
+    const isDuplicate =
+      error?.code === 11000 ||
+      (error?.name === "MongoServerError" && error?.code === 11000) ||
+      message.includes("already has an account") ||
+      message.includes("already in use") ||
+      message.includes("already exists");
+
+    if (isDuplicate) {
+      message = "This email ID already has an account or is already in use. Please log in instead.";
+    }
+
+    const statusCode = isDuplicate ? 409 : 400;
     res.status(statusCode).json({
       success: false,
       message,

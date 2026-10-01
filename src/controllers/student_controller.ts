@@ -132,26 +132,28 @@ export const createStudentController = async (
       message: "Student created successfully",
       data: student,
     });
-  } catch (error) {
-    const message =
+  } catch (error: any) {
+    const rawMessage =
       error instanceof Error ? error.message : "Failed to create student";
 
-    if (message.includes("already exists")) {
-      const existingProfile = req.body?.email
-        ? await getStudentByEmail(req.body.email).catch(() => null)
-        : null;
+    const isDuplicate =
+      error?.code === 11000 ||
+      (error?.name === "MongoServerError" && error?.code === 11000) ||
+      rawMessage.includes("already has an account") ||
+      rawMessage.includes("already in use") ||
+      rawMessage.includes("already exists");
 
+    if (isDuplicate) {
       res.status(409).json({
         success: false,
-        message,
-        data: existingProfile ? { studentProfile: existingProfile } : undefined,
+        message: "This email ID already has an account or is already in use. Please log in instead.",
       });
       return;
     }
 
     res.status(500).json({
       success: false,
-      message,
+      message: rawMessage,
     });
   }
 };
@@ -298,3 +300,50 @@ export const updateStudentController = async (
     });
   }
 };
+
+export const searchStudentController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const rawEmail = (req.query.email as string) || (req.query.q as string);
+    if (!rawEmail || !rawEmail.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "Email query parameter is required",
+      });
+      return;
+    }
+
+    const email = rawEmail.trim().toLowerCase();
+    const student = await getStudentByEmail(email);
+    const user = student.userId as any;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        studentProfileId: student._id.toString(),
+        name: student.name,
+        email: user?.email || email,
+        studentType: student.studentType || "external",
+        classLevel: student.schoolDetails?.classLevel || student.education?.classLevel || "",
+        board: student.schoolDetails?.board || student.education?.board || "",
+        currentClassSectionId: student.classSectionId?.toString(),
+      },
+    });
+  } catch (error: any) {
+    if (error?.message === "Student not found") {
+      res.status(404).json({
+        success: false,
+        message: "No EduPye student account found for this email.",
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      message: error?.message || "Failed to search student",
+    });
+  }
+};
+

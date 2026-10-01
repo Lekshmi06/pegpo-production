@@ -238,7 +238,7 @@ async function runCompetitiveExamVerification() {
   console.log(`  ✓ All India Rank: AIR ${evaluationResult.allIndiaRank} / ${evaluationResult.totalCandidates}`);
   console.log(`  ✓ Section breakdown count: ${evaluationResult.sectionScores?.length}`);
 
-  if (evaluationResult.incorrect > 0 && evaluationResult.score >= (evaluationResult.correct * 4)) {
+  if ((evaluationResult.incorrect ?? 0) > 0 && (evaluationResult.score ?? 0) >= ((evaluationResult.correct ?? 0) * 4)) {
     throw new Error("Negative marking was not deducted for incorrect answer!");
   }
   console.log("  ✓ Negative marking deduction confirmed.");

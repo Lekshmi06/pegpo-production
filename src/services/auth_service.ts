@@ -1,11 +1,13 @@
-import User, { IUser } from "../models/User";
+import User, { IUser, UserRole } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
+import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
+import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
 
 export interface RegisterInput {
   email: string;
   password?: string;
   name?: string;
-  userType?: "student";
+  userType?: UserRole;
 }
 
 export interface LoginInput {
@@ -22,6 +24,8 @@ export interface AuthResult {
     language?: string;
   };
   studentProfile?: any;
+  teacherProfile?: any;
+  researcherProfile?: any;
   token: string;
 }
 
@@ -33,45 +37,76 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
 
   const existingUser = await User.findOne({ email: cleanEmail });
   if (existingUser) {
-    // If user exists and already has a student profile, retrieve it or return existing
-    const existingProfile = await StudentProfile.findOne({ userId: existingUser._id }).lean();
-    if (existingUser.password && data.password && existingUser.password !== data.password) {
-      throw new Error("A user with this email already exists");
-    }
-    
-    // If existing user had no password yet, save it
-    if (!existingUser.password && data.password) {
-      existingUser.password = data.password;
-      if (data.name && !existingUser.name) existingUser.name = data.name;
-      await existingUser.save();
-    }
-
-    return {
-      user: {
-        _id: (existingUser._id as any).toString(),
-        email: existingUser.email,
-        name: existingUser.name || data.name,
-        userType: existingUser.userType,
-        language: existingUser.language,
-      },
-      studentProfile: existingProfile,
-      token: (existingUser._id as any).toString(),
-    };
+    throw new Error("This email ID already has an account or is already in use. Please log in instead.");
   }
 
   const resolvedName =
     data.name?.trim() ||
     cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-  const user = await User.create({
-    email: cleanEmail,
-    password: data.password || "",
-    name: resolvedName,
-    userType: data.userType || "student",
-    language: "English",
-  });
+  const targetRole: UserRole = data.userType || "student";
+
+  let user;
+  try {
+    user = await User.create({
+      email: cleanEmail,
+      password: data.password || "",
+      name: resolvedName,
+      userType: targetRole,
+      language: "English",
+    });
+  } catch (createErr: any) {
+    if (createErr?.code === 11000 || (createErr?.name === "MongoServerError" && createErr?.code === 11000)) {
+      throw new Error("This email ID already has an account or is already in use. Please log in instead.");
+    }
+    throw createErr;
+  }
 
   try {
+    if (targetRole === "teacher") {
+      const teacherProfile = await TeacherProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        teacherType: "institution",
+        goal: "Lesson Planning",
+      });
+
+      return {
+        user: {
+          _id: (user._id as any).toString(),
+          email: user.email,
+          name: user.name,
+          userType: user.userType,
+          language: user.language,
+        },
+        teacherProfile,
+        token: (user._id as any).toString(),
+      };
+    }
+
+    if (targetRole === "researcher") {
+      const researcherProfile = await ResearcherProfile.create({
+        userId: user._id,
+        fullName: resolvedName,
+        contact: { email: user.email },
+        onboardingCompleted: false,
+        onboardingStep: 1,
+      });
+
+      return {
+        user: {
+          _id: (user._id as any).toString(),
+          email: user.email,
+          name: user.name,
+          userType: user.userType,
+          language: user.language,
+        },
+        researcherProfile,
+        token: (user._id as any).toString(),
+      };
+    }
+
+    // Otherwise create StudentProfile
     const studentProfile = await StudentProfile.create({
       userId: user._id,
       name: resolvedName,
@@ -131,14 +166,65 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     await user.save();
   }
 
+  const resolvedName =
+    user.name ||
+    cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  if (user.userType === "teacher") {
+    let teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
+
+    if (!teacherProfile) {
+      teacherProfile = (await TeacherProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        teacherType: "institution",
+        goal: "Lesson Planning",
+      })) as any;
+    }
+
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      teacherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  if (user.userType === "researcher") {
+    let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
+
+    if (!researcherProfile) {
+      researcherProfile = (await ResearcherProfile.create({
+        userId: user._id,
+        fullName: resolvedName,
+        contact: { email: user.email },
+        onboardingCompleted: false,
+        onboardingStep: 1,
+      })) as any;
+    }
+
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      researcherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
   let studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
 
-  // If profile doesn't exist yet for this user, create an initial one
+  // If profile doesn't exist yet for this student user, create an initial one
   if (!studentProfile) {
-    const resolvedName =
-      user.name ||
-      cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
     studentProfile = (await StudentProfile.create({
       userId: user._id,
       name: resolvedName,
@@ -177,6 +263,36 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
   const user = await User.findById(userId);
   if (!user) {
     throw new Error("User not found");
+  }
+
+  if (user.userType === "teacher") {
+    const teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      teacherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  if (user.userType === "researcher") {
+    const researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      researcherProfile,
+      token: (user._id as any).toString(),
+    };
   }
 
   const studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();

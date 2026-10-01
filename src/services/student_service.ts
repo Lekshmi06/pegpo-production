@@ -57,19 +57,32 @@ export interface UpdateStudentData {
 }
 
 export const createStudent = async (data: CreateStudentData) => {
+  const cleanEmail = (data.email || "").trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error("Email is required");
+  }
+
   const existingUser = await User.findOne({
-    email: data.email.toLowerCase(),
+    email: cleanEmail,
   });
 
   if (existingUser) {
-    throw new Error("A user with this email already exists");
+    throw new Error("This email ID already has an account or is already in use. Please log in instead.");
   }
 
-  const user = await User.create({
-    email: data.email,
-    userType: "student",
-    language: data.language,
-  });
+  let user;
+  try {
+    user = await User.create({
+      email: cleanEmail,
+      userType: "student",
+      language: data.language,
+    });
+  } catch (createErr: any) {
+    if (createErr?.code === 11000 || (createErr?.name === "MongoServerError" && createErr?.code === 11000)) {
+      throw new Error("This email ID already has an account or is already in use. Please log in instead.");
+    }
+    throw createErr;
+  }
 
   try {
     const studentProfile = await StudentProfile.create({

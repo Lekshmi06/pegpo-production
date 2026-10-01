@@ -238,7 +238,7 @@ async function runTestSuite() {
 
   // Fetch attempt analysis
   const analysis = await getAttemptAnalysis(attemptSession.attemptId, context.studentProfileId);
-  if (!analysis || analysis.questions.length !== 2) {
+  if (!analysis || analysis.questions?.length !== 2) {
     throw new Error("Failed to fetch detailed attempt analysis.");
   }
   console.log("✔ Step 6 Passed: Start, submit, scoring, and analysis pipeline executed cleanly.\n");

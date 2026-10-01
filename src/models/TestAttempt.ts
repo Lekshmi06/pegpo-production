@@ -3,6 +3,7 @@ import "./Test";
 import "./Question";
 
 export type QuestionAttemptStatus = "attempted" | "revise" | "skipped";
+export type AttemptMode = "practice" | "scheduled_test";
 
 export interface ITestAnswerItem {
   questionId: mongoose.Types.ObjectId;
@@ -51,6 +52,10 @@ export interface ITestAttempt extends Document {
   percentile?: number;
   allIndiaRank?: number;
   totalCandidates?: number;
+
+  attemptMode?: AttemptMode;
+  classSectionId?: mongoose.Types.ObjectId;
+  isResultPublished?: boolean;
 
   createdAt: Date;
   updatedAt: Date;
@@ -166,6 +171,17 @@ const testAttemptSchema = new Schema<ITestAttempt>(
       default: "in_progress",
       index: true,
     },
+    attemptMode: {
+      type: String,
+      enum: ["practice", "scheduled_test"],
+      default: "practice",
+      index: true,
+    },
+    classSectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "ClassSection",
+      index: true,
+    },
     startedAt: {
       type: Date,
       default: Date.now,
@@ -232,6 +248,11 @@ const testAttemptSchema = new Schema<ITestAttempt>(
     totalCandidates: {
       type: Number,
     },
+    isResultPublished: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -239,6 +260,7 @@ const testAttemptSchema = new Schema<ITestAttempt>(
 );
 
 testAttemptSchema.index({ studentProfileId: 1, testId: 1, createdAt: -1 });
+testAttemptSchema.index({ testId: 1, attemptMode: 1, createdAt: -1 });
 
 const TestAttempt = mongoose.model<ITestAttempt>(
   "TestAttempt",

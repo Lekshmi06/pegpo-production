@@ -20,11 +20,14 @@ export const getTestsController = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { board, classLevel, subject, isLocked, search } = req.query;
+    const { board, classLevel, subject, isLocked, search, usage } = req.query;
 
     const studentProfileId = req.studentProfile?._id
       ? req.studentProfile._id.toString()
       : undefined;
+
+    const tzHeader = req.headers["x-timezone-offset"];
+    const clientTimezoneOffset = tzHeader !== undefined ? Number(tzHeader) : undefined;
 
     const filters = {
       board: typeof board === "string" ? board : undefined,
@@ -33,7 +36,9 @@ export const getTestsController = async (
       isLocked:
         typeof isLocked === "string" ? isLocked.toLowerCase() === "true" : undefined,
       search: typeof search === "string" ? search : undefined,
+      usage: typeof usage === "string" ? (usage as any) : undefined,
       studentProfileId,
+      clientTimezoneOffset,
     };
 
     let tests = await listTests(filters);
@@ -146,8 +151,11 @@ export const startTestAttemptController = async (
 
     const studentProfileId = req.studentProfile._id.toString();
     const userId = req.user._id.toString();
+    const attemptMode = (req.body?.attemptMode || req.query?.attemptMode) as "practice" | "scheduled_test" | undefined;
+    const tzHeader = req.headers["x-timezone-offset"];
+    const clientTimezoneOffset = tzHeader !== undefined ? Number(tzHeader) : undefined;
 
-    const attempt = await startTestAttempt(testId, studentProfileId, userId);
+    const attempt = await startTestAttempt(testId, studentProfileId, userId, attemptMode, clientTimezoneOffset);
 
     res.status(200).json({
       success: true,
@@ -187,7 +195,7 @@ export const submitTestAttemptController = async (
     const studentProfileId = req.studentProfile._id.toString();
     const userId = req.user._id.toString();
 
-    const { attemptId, answers, statusByQuestion, timeSpentSeconds } = req.body;
+    const { attemptId, answers, statusByQuestion, timeSpentSeconds, attemptMode } = req.body;
 
     if (!answers || typeof answers !== "object") {
       res.status(400).json({
@@ -202,6 +210,7 @@ export const submitTestAttemptController = async (
       answers,
       statusByQuestion,
       timeSpentSeconds: Number(timeSpentSeconds) || 0,
+      attemptMode,
     });
 
     res.status(200).json({

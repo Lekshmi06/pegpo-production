@@ -364,7 +364,7 @@ ${sample}
   }
 }
 
-async function generateFlashcards(sample: string, count = 6): Promise<Flashcard[]> {
+export async function generateFlashcards(sample: string, count = 6): Promise<Flashcard[]> {
   if (!ai) return fallbackFlashcards(sample, count);
   try {
     const prompt = `Generate ${count} high-yield study flashcards from this document.

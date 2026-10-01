@@ -47,8 +47,13 @@ export interface ISchoolDetails {
   textbookFileName?: string;
 }
 
+export type StudentType = "institution" | "tuition" | "external";
+
 export interface IStudentProfile extends Document {
   userId: mongoose.Types.ObjectId;
+  studentType: StudentType;
+  organizationId?: mongoose.Types.ObjectId;
+  classSectionId?: mongoose.Types.ObjectId;
 
   name: string;
   phone?: string;
@@ -84,6 +89,26 @@ const studentProfileSchema = new Schema<IStudentProfile>(
       ref: "User",
       required: true,
       unique: true,
+      index: true,
+    },
+
+    studentType: {
+      type: String,
+      enum: ["institution", "tuition", "external"],
+      default: "external",
+      required: true,
+      index: true,
+    },
+
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      index: true,
+    },
+
+    classSectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "ClassSection",
       index: true,
     },
 
