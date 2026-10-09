@@ -18,7 +18,7 @@ async function runVerification() {
       userA = await User.create({
         email: "researcher_a_test@edupye.com",
         name: "Dr. Alice Researcher",
-        role: "researcher",
+        userType: "researcher",
       });
     }
 
@@ -37,7 +37,7 @@ async function runVerification() {
       userB = await User.create({
         email: "researcher_b_test@edupye.com",
         name: "Dr. Bob Researcher",
-        role: "researcher",
+        userType: "researcher",
       });
     }
 

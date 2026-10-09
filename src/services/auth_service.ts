@@ -106,6 +106,19 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       };
     }
 
+    if (targetRole === "provider" || targetRole === "learner") {
+      return {
+        user: {
+          _id: (user._id as any).toString(),
+          email: user.email,
+          name: user.name,
+          userType: user.userType,
+          language: user.language,
+        },
+        token: (user._id as any).toString(),
+      };
+    }
+
     // Otherwise create StudentProfile
     const studentProfile = await StudentProfile.create({
       userId: user._id,
@@ -221,6 +234,19 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     };
   }
 
+  if (user.userType === "provider" || user.userType === "learner") {
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      token: (user._id as any).toString(),
+    };
+  }
+
   let studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
 
   // If profile doesn't exist yet for this student user, create an initial one
@@ -291,6 +317,19 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
         language: user.language,
       },
       researcherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  if (user.userType === "provider" || user.userType === "learner") {
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
       token: (user._id as any).toString(),
     };
   }

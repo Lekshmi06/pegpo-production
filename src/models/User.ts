@@ -6,7 +6,9 @@ export type UserRole =
   | "researcher"
   | "institution"
   | "work"
-  | "personal";
+  | "personal"
+  | "provider"
+  | "learner";
 
 export interface IUser extends Document {
   email: string;
@@ -50,6 +52,8 @@ const userSchema = new Schema<IUser>(
         "institution",
         "work",
         "personal",
+        "provider",
+        "learner",
       ],
     },
 

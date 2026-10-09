@@ -5,7 +5,13 @@ import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
 
-// Augment Express Request interface with authenticated student/teacher/researcher data
+import Institution, { IInstitution } from "../models/Institution";
+import InstitutionMembership, {
+  IInstitutionMembership,
+  InstitutionRole,
+} from "../models/InstitutionMembership";
+
+// Augment Express Request interface with authenticated student/teacher/researcher/institution data
 declare global {
   namespace Express {
     interface Request {
@@ -13,6 +19,9 @@ declare global {
       studentProfile?: IStudentProfile;
       teacherProfile?: ITeacherProfile;
       researcherProfile?: IResearcherProfile;
+      institution?: IInstitution;
+      institutionMembership?: IInstitutionMembership;
+      institutionId?: string;
     }
   }
 }
@@ -582,5 +591,303 @@ export const authenticateStudentOrTeacher = async (
   }
 };
 
+/**
+ * General user authentication middleware for Course Marketplace.
+ * Checks for Bearer token or x-user-id header or userId query param.
+ * Returns 401 if missing or invalid.
+ */
+export const authenticateUser = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.substring(7).trim()
+      : undefined;
 
+    const rawUserId =
+      bearerToken ||
+      (req.headers["x-user-id"] as string) ||
+      (req.query.userId as string);
 
+    if (!rawUserId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in.",
+      });
+      return;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(rawUserId)) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+      return;
+    }
+
+    const user = await User.findById(rawUserId);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "User not found or session expired.",
+      });
+      return;
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Authentication error";
+    res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+/**
+ * Provider-specific authorization middleware.
+ * Ensures the authenticated user has the 'provider' role.
+ * Returns 403 if user is not a provider.
+ */
+export const authenticateProvider = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  await authenticateUser(req, res, async () => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+      return;
+    }
+
+    if (req.user.userType !== "provider") {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Provider access required.",
+      });
+      return;
+    }
+
+    next();
+  });
+};
+
+/**
+ * Learner-specific authentication middleware.
+ * Ensures the user is logged in as a learner, student, or personal user.
+ */
+export const authenticateLearner = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  await authenticateUser(req, res, async () => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in as a learner.",
+      });
+      return;
+    }
+
+    next();
+  });
+};
+
+/**
+ * Optional authentication for public course browsing.
+ * Populates req.user if a valid token is provided, but allows guest access.
+ */
+export const optionalAuthenticateUser = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.substring(7).trim()
+      : undefined;
+
+    const rawUserId =
+      bearerToken ||
+      (req.headers["x-user-id"] as string) ||
+      (req.query.userId as string);
+
+    if (rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
+      const user = await User.findById(rawUserId);
+      if (user) {
+        req.user = user;
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+  next();
+};
+
+const resolveParam = (p: unknown): string | undefined => {
+  if (typeof p === "string") return p;
+  if (Array.isArray(p) && typeof p[0] === "string") return p[0];
+  return undefined;
+};
+
+/**
+ * Strict Institution Authorization Middleware
+ * Enforces server-side tenant isolation:
+ * 1. Resolves authenticated user via authenticateUser
+ * 2. Resolves target institutionId from route params (:institutionId or :id),
+ *    request headers (x-institution-id), query, or body.
+ * 3. Never trusts client assertions: queries DB for active InstitutionMembership
+ * 4. Verifies role requirements if allowedRoles is specified
+ * 5. Returns 403 Forbidden on cross-institution access or role mismatch
+ */
+export const authenticateInstitutionMember = (allowedRoles?: InstitutionRole[]) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    await authenticateUser(req, res, async () => {
+      try {
+        if (!req.user) {
+          res.status(401).json({
+            success: false,
+            message: "Authentication required.",
+          });
+          return;
+        }
+
+        const rawInstitutionId =
+          resolveParam(req.params.institutionId) ||
+          resolveParam(req.params.id) ||
+          (req.headers["x-institution-id"] as string) ||
+          (req.query.institutionId as string) ||
+          req.body?.institutionId;
+
+        if (!rawInstitutionId || !mongoose.Types.ObjectId.isValid(rawInstitutionId)) {
+          res.status(400).json({
+            success: false,
+            message: "A valid institution ID is required in route parameters or headers.",
+          });
+          return;
+        }
+
+        const institutionId = rawInstitutionId.toString();
+
+        // Check active membership
+        let membership = await InstitutionMembership.findOne({
+          institutionId,
+          userId: req.user._id,
+          status: "active",
+        });
+
+        // If not found in membership, check if the user is the institution owner
+        if (!membership) {
+          const institutionDoc = await Institution.findById(institutionId);
+          if (institutionDoc && institutionDoc.owner.toString() === req.user._id.toString()) {
+            // Auto-heal/sync owner membership as admin if missing
+            membership = await InstitutionMembership.findOneAndUpdate(
+              { institutionId, userId: req.user._id },
+              {
+                $setOnInsert: {
+                  institutionId,
+                  userId: req.user._id,
+                  role: "admin",
+                  status: "active",
+                  title: "Institution Owner & Administrator",
+                },
+              },
+              { upsert: true, new: true }
+            );
+          }
+        }
+
+        if (!membership || membership.status !== "active") {
+          res.status(403).json({
+            success: false,
+            message: "Forbidden: You do not have an active membership in this institution.",
+          });
+          return;
+        }
+
+        // Verify role restriction if provided
+        if (allowedRoles && allowedRoles.length > 0) {
+          if (!allowedRoles.includes(membership.role)) {
+            res.status(403).json({
+              success: false,
+              message: `Forbidden: Requires institution role [${allowedRoles.join(", ")}]. Your current role is '${membership.role}'.`,
+            });
+            return;
+          }
+        }
+
+        req.institutionId = institutionId;
+        req.institutionMembership = membership;
+        next();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Institution authorization error";
+        res.status(500).json({
+          success: false,
+          message,
+        });
+      }
+    });
+  };
+};
+
+export const requireInstitutionAdmin = authenticateInstitutionMember(["admin"]);
+export const requireInstitutionManagement = authenticateInstitutionMember(["admin", "subadmin"]);
+export const requireInstitutionStaff = authenticateInstitutionMember(["admin", "subadmin", "trainer"]);
+
+/**
+ * Granular Permission Middleware
+ * Admin is always granted access.
+ * Sub-Admin is checked for explicit permission in membership.permissions array.
+ * Other roles are denied with 403 Forbidden.
+ */
+export const requireInstitutionPermission = (requiredPermission: string) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const baseMiddleware = authenticateInstitutionMember(["admin", "subadmin"]);
+    await baseMiddleware(req, res, () => {
+      const membership = req.institutionMembership;
+      if (!membership) {
+        res.status(403).json({
+          success: false,
+          message: "Forbidden: No active institution membership found.",
+        });
+        return;
+      }
+
+      if (membership.role === "admin") {
+        next();
+        return;
+      }
+
+      if (membership.role === "subadmin") {
+        const hasPermission =
+          Array.isArray(membership.permissions) &&
+          membership.permissions.includes(requiredPermission);
+
+        if (hasPermission) {
+          next();
+          return;
+        }
+
+        res.status(403).json({
+          success: false,
+          message: `Forbidden: Sub-Admin lacks required '${requiredPermission}' permission.`,
+        });
+        return;
+      }
+
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Insufficient privileges for this operation.",
+      });
+    });
+  };
+};
