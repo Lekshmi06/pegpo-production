@@ -23,6 +23,7 @@ export interface IInstitutionSettings {
   allowMemberInvites?: boolean;
   defaultBatchNaming?: string;
   industryOrField?: string;
+  companySize?: string;
 }
 
 export interface IInstitution extends Document {
@@ -116,6 +117,7 @@ const institutionSchema = new Schema<IInstitution>(
       allowMemberInvites: { type: Boolean, default: true },
       defaultBatchNaming: { type: String, default: "Batch" },
       industryOrField: { type: String, trim: true },
+      companySize: { type: String, trim: true },
     },
   },
   {

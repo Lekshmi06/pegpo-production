@@ -667,7 +667,7 @@ export const authenticateProvider = async (
       return;
     }
 
-    if (req.user.userType !== "provider") {
+    if (req.user.userType !== "provider" && req.user.userType !== "teacher") {
       res.status(403).json({
         success: false,
         message: "Forbidden: Provider access required.",
@@ -849,7 +849,7 @@ export const requireInstitutionStaff = authenticateInstitutionMember(["admin", "
  * Sub-Admin is checked for explicit permission in membership.permissions array.
  * Other roles are denied with 403 Forbidden.
  */
-export const requireInstitutionPermission = (requiredPermission: string) => {
+export const requireInstitutionPermission = (requiredPermission: string | string[]) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const baseMiddleware = authenticateInstitutionMember(["admin", "subadmin"]);
     await baseMiddleware(req, res, () => {
@@ -868,9 +868,17 @@ export const requireInstitutionPermission = (requiredPermission: string) => {
       }
 
       if (membership.role === "subadmin") {
-        const hasPermission =
-          Array.isArray(membership.permissions) &&
-          membership.permissions.includes(requiredPermission);
+        const requiredList = Array.isArray(requiredPermission)
+          ? requiredPermission
+          : [requiredPermission];
+
+        const userPerms = new Set(membership.permissions || []);
+        if (userPerms.has("manage_members")) userPerms.add("manage_employees");
+        if (userPerms.has("manage_employees")) userPerms.add("manage_members");
+        if (userPerms.has("invite_members")) userPerms.add("invite_employees");
+        if (userPerms.has("invite_employees")) userPerms.add("invite_members");
+
+        const hasPermission = requiredList.some((p) => userPerms.has(p));
 
         if (hasPermission) {
           next();
@@ -879,7 +887,7 @@ export const requireInstitutionPermission = (requiredPermission: string) => {
 
         res.status(403).json({
           success: false,
-          message: `Forbidden: Sub-Admin lacks required '${requiredPermission}' permission.`,
+          message: `Forbidden: Sub-Admin lacks required '${requiredList.join(" or ")}' permission.`,
         });
         return;
       }

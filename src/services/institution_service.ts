@@ -30,7 +30,9 @@ export interface CreateInstitutionInput {
     allowMemberInvites?: boolean;
     defaultBatchNaming?: string;
     industryOrField?: string;
+    companySize?: string;
   };
+  adminTitle?: string;
 }
 
 export interface UpdateInstitutionInput {
@@ -53,6 +55,7 @@ export interface UpdateInstitutionInput {
     allowMemberInvites?: boolean;
     defaultBatchNaming?: string;
     industryOrField?: string;
+    companySize?: string;
   };
 }
 
@@ -61,6 +64,9 @@ export interface AddMemberInput {
   role: InstitutionRole;
   title?: string;
   department?: string;
+  team?: string;
+  managerId?: string;
+  onboardingStatus?: "not_started" | "in_progress" | "completed";
   name?: string;
   permissions?: string[];
   linkedLearners?: string[];
@@ -73,6 +79,9 @@ export interface UpdateMemberInput {
   status?: MembershipStatus;
   title?: string;
   department?: string;
+  team?: string;
+  managerId?: string;
+  onboardingStatus?: "not_started" | "in_progress" | "completed";
   permissions?: string[];
   linkedLearners?: string[];
   notes?: string;
@@ -119,10 +128,28 @@ export async function createInstitution(
     throw new Error("Institution name is required.");
   }
 
-  const slug = await generateUniqueSlug(input.name);
+  const cleanName = input.name.trim();
+
+  // Prevent duplicate company/institution creation from repeated submissions by same owner
+  const escapedName = cleanName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const existingSameName = await Institution.findOne({
+    owner: new mongoose.Types.ObjectId(ownerId),
+    name: { $regex: new RegExp(`^${escapedName}$`, "i") },
+    status: { $ne: "suspended" },
+  });
+
+  if (existingSameName) {
+    const error: any = new Error(
+      "An organization with this name has already been registered for your account."
+    );
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const slug = await generateUniqueSlug(cleanName);
 
   const institution = await Institution.create({
-    name: input.name.trim(),
+    name: cleanName,
     slug,
     institutionType: input.institutionType || "training_institute",
     description: input.description?.trim(),
@@ -145,7 +172,11 @@ export async function createInstitution(
     userId: new mongoose.Types.ObjectId(ownerId),
     role: "admin",
     status: "active",
-    title: "Institution Owner & Administrator",
+    title:
+      input.adminTitle?.trim() ||
+      (input.institutionType === "company"
+        ? "Company Administrator"
+        : "Institution Owner & Administrator"),
     joinedAt: new Date(),
   });
 
@@ -303,9 +334,10 @@ export async function getInstitutionMembers(
     .populate<{ userId: IUser }>("userId", "name email userType")
     .populate<{ linkedLearners: IUser[] }>("linkedLearners", "name email userType")
     .populate<{ invitedBy: IUser }>("invitedBy", "name email")
+    .populate<{ managerId: IUser }>("managerId", "name email")
     .sort({ createdAt: -1 });
 
-  // Optional in-memory search for populated user name/email/title/dept
+  // Optional in-memory search for populated user name/email/title/dept/team
   let filtered = members;
   if (filter.search && filter.search.trim()) {
     const s = filter.search.toLowerCase().trim();
@@ -316,7 +348,8 @@ export async function getInstitutionMembers(
       const matchEmail = u.email?.toLowerCase().includes(s);
       const matchTitle = m.title?.toLowerCase().includes(s);
       const matchDept = m.department?.toLowerCase().includes(s);
-      return Boolean(matchName || matchEmail || matchTitle || matchDept);
+      const matchTeam = m.team?.toLowerCase().includes(s);
+      return Boolean(matchName || matchEmail || matchTitle || matchDept || matchTeam);
     });
   }
 
@@ -340,7 +373,8 @@ export async function getMemberById(
   })
     .populate<{ userId: IUser }>("userId", "name email userType")
     .populate<{ linkedLearners: IUser[] }>("linkedLearners", "name email userType")
-    .populate<{ invitedBy: IUser }>("invitedBy", "name email");
+    .populate<{ invitedBy: IUser }>("invitedBy", "name email")
+    .populate<{ managerId: IUser }>("managerId", "name email");
 
   if (!member) {
     const error: any = new Error("Member not found in this institution.");
@@ -413,7 +447,9 @@ export async function addOrInviteMember(
     const hasPermission =
       Array.isArray(actorMembership.permissions) &&
       (actorMembership.permissions.includes("manage_members") ||
-        actorMembership.permissions.includes("invite_members"));
+        actorMembership.permissions.includes("manage_employees") ||
+        actorMembership.permissions.includes("invite_members") ||
+        actorMembership.permissions.includes("invite_employees"));
 
     if (!hasPermission) {
       const error: any = new Error("Forbidden: Sub-Admin lacks permission to invite members.");
@@ -476,6 +512,9 @@ export async function addOrInviteMember(
         ? "Parent / Guardian"
         : "Trainee"),
     department: input.department?.trim(),
+    team: input.team?.trim(),
+    managerId: input.managerId ? new mongoose.Types.ObjectId(input.managerId) : undefined,
+    onboardingStatus: input.onboardingStatus || "not_started",
     permissions: input.role === "subadmin" && Array.isArray(input.permissions) ? input.permissions : [],
     linkedLearners:
       input.role === "parent" && Array.isArray(input.linkedLearners)
@@ -489,6 +528,7 @@ export async function addOrInviteMember(
 
   await membership.populate<{ userId: IUser }>("userId", "name email userType");
   await membership.populate<{ linkedLearners: IUser[] }>("linkedLearners", "name email userType");
+  await membership.populate<{ managerId: IUser }>("managerId", "name email");
   return membership;
 }
 
@@ -564,7 +604,8 @@ export async function updateMemberRole(
     if (actorMembership.role === "subadmin") {
       const hasPermission =
         Array.isArray(actorMembership.permissions) &&
-        actorMembership.permissions.includes("manage_members");
+        (actorMembership.permissions.includes("manage_members") ||
+          actorMembership.permissions.includes("manage_employees"));
 
       if (!hasPermission) {
         const error: any = new Error("Forbidden: Sub-Admin lacks 'manage_members' permission.");
@@ -593,6 +634,13 @@ export async function updateMemberRole(
   }
   if (input.title !== undefined) membership.title = input.title.trim();
   if (input.department !== undefined) membership.department = input.department.trim();
+  if (input.team !== undefined) membership.team = input.team.trim();
+  if (input.managerId !== undefined) {
+    membership.managerId = input.managerId ? new mongoose.Types.ObjectId(input.managerId) : undefined;
+  }
+  if (input.onboardingStatus !== undefined) {
+    membership.onboardingStatus = input.onboardingStatus;
+  }
   if (input.permissions !== undefined && membership.role === "subadmin") {
     membership.permissions = input.permissions;
   }
@@ -604,6 +652,7 @@ export async function updateMemberRole(
   await membership.save();
   await membership.populate<{ userId: IUser }>("userId", "name email userType");
   await membership.populate<{ linkedLearners: IUser[] }>("linkedLearners", "name email userType");
+  await membership.populate<{ managerId: IUser }>("managerId", "name email");
   return membership as any;
 }
 

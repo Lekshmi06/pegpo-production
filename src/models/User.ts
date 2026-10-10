@@ -5,6 +5,7 @@ export type UserRole =
   | "teacher"
   | "researcher"
   | "institution"
+  | "company"
   | "work"
   | "personal"
   | "provider"
@@ -50,6 +51,7 @@ const userSchema = new Schema<IUser>(
         "teacher",
         "researcher",
         "institution",
+        "company",
         "work",
         "personal",
         "provider",

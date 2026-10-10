@@ -17,7 +17,7 @@ export async function createInstitution(req: Request, res: Response): Promise<vo
       return;
     }
 
-    const { name, institutionType, description, logo, contactEmail, contactPhone, website, address, settings } = req.body;
+    const { name, institutionType, description, logo, contactEmail, contactPhone, website, address, settings, adminTitle } = req.body;
 
     if (!name || typeof name !== "string" || !name.trim()) {
       res.status(400).json({ success: false, message: "Institution name is required." });
@@ -34,6 +34,7 @@ export async function createInstitution(req: Request, res: Response): Promise<vo
       website,
       address,
       settings,
+      adminTitle,
     });
 
     res.status(201).json({
@@ -219,8 +220,20 @@ export async function addMember(req: Request, res: Response): Promise<void> {
     }
 
     const institutionId = getParam(req.params.id) || req.institutionId || "";
-    const { email, role, title, department, name, permissions, linkedLearners, status, notes } =
-      req.body;
+    const {
+      email,
+      role,
+      title,
+      department,
+      team,
+      managerId,
+      onboardingStatus,
+      name,
+      permissions,
+      linkedLearners,
+      status,
+      notes,
+    } = req.body;
 
     if (!email || typeof email !== "string" || !email.trim()) {
       res.status(400).json({ success: false, message: "Member email is required." });
@@ -235,6 +248,9 @@ export async function addMember(req: Request, res: Response): Promise<void> {
         role: role || "trainee",
         title,
         department,
+        team,
+        managerId,
+        onboardingStatus,
         name,
         permissions,
         linkedLearners,

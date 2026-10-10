@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import User, { IUser, UserRole } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
+
 
 export interface RegisterInput {
   email: string;
@@ -106,7 +108,12 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       };
     }
 
-    if (targetRole === "provider" || targetRole === "learner") {
+    if (
+      targetRole === "provider" ||
+      targetRole === "learner" ||
+      targetRole === "company" ||
+      targetRole === "institution"
+    ) {
       return {
         user: {
           _id: (user._id as any).toString(),
@@ -234,7 +241,12 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     };
   }
 
-  if (user.userType === "provider" || user.userType === "learner") {
+  if (
+    user.userType === "provider" ||
+    user.userType === "learner" ||
+    user.userType === "company" ||
+    user.userType === "institution"
+  ) {
     return {
       user: {
         _id: (user._id as any).toString(),
@@ -321,7 +333,12 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
     };
   }
 
-  if (user.userType === "provider" || user.userType === "learner") {
+  if (
+    user.userType === "provider" ||
+    user.userType === "learner" ||
+    user.userType === "company" ||
+    user.userType === "institution"
+  ) {
     return {
       user: {
         _id: (user._id as any).toString(),
@@ -348,3 +365,130 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
     token: (user._id as any).toString(),
   };
 };
+
+export interface UpdateRoleInput {
+  userId?: string;
+  email?: string;
+  role: UserRole;
+}
+
+export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult> => {
+  const targetRole = input.role;
+  if (!targetRole) {
+    throw new Error("Role is required");
+  }
+
+  let user = null;
+  if (input.userId && mongoose.Types.ObjectId.isValid(input.userId)) {
+    user = await User.findById(input.userId);
+  } else if (input.email) {
+    user = await User.findOne({ email: input.email.trim().toLowerCase() });
+  }
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  user.userType = targetRole;
+  await user.save();
+
+  const resolvedName =
+    user.name ||
+    user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  if (targetRole === "teacher") {
+    let teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
+    if (!teacherProfile) {
+      teacherProfile = (await TeacherProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        teacherType: "institution",
+        goal: "Lesson Planning",
+      })) as any;
+    }
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      teacherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  if (targetRole === "researcher") {
+    let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
+    if (!researcherProfile) {
+      researcherProfile = (await ResearcherProfile.create({
+        userId: user._id,
+        fullName: resolvedName,
+        contact: { email: user.email },
+        onboardingCompleted: false,
+        onboardingStep: 1,
+      })) as any;
+    }
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      researcherProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  if (targetRole === "student") {
+    let studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
+    if (!studentProfile) {
+      studentProfile = (await StudentProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        goal: "School Curriculum Mastery",
+        learningPath: "school",
+        education: {
+          level: "school",
+          institution: "School",
+          board: "CBSE",
+          classLevel: "Class 10",
+        },
+        schoolDetails: {
+          schoolName: "School",
+          board: "CBSE",
+          classLevel: "Class 10",
+          studyMode: "full_syllabus",
+          selectedSubject: "Science",
+        },
+      })) as any;
+    }
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        language: user.language,
+      },
+      studentProfile,
+      token: (user._id as any).toString(),
+    };
+  }
+
+  // provider, learner, company, institution, etc.
+  return {
+    user: {
+      _id: (user._id as any).toString(),
+      email: user.email,
+      name: user.name,
+      userType: user.userType,
+      language: user.language,
+    },
+    token: (user._id as any).toString(),
+  };
+};
+

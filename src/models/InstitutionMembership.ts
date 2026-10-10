@@ -20,6 +20,9 @@ export interface IInstitutionMembership extends Document {
   invitedBy?: Types.ObjectId;
   linkedLearners?: Types.ObjectId[];
   invitationCode?: string;
+  team?: string;
+  managerId?: Types.ObjectId;
+  onboardingStatus?: "not_started" | "in_progress" | "completed";
   notes?: string;
   joinedAt: Date;
   createdAt: Date;
@@ -84,6 +87,20 @@ const institutionMembershipSchema = new Schema<IInstitutionMembership>(
       index: true,
       sparse: true,
     },
+    team: {
+      type: String,
+      trim: true,
+    },
+    managerId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    onboardingStatus: {
+      type: String,
+      enum: ["not_started", "in_progress", "completed"],
+      default: "not_started",
+      index: true,
+    },
     notes: {
       type: String,
       trim: true,
@@ -104,6 +121,7 @@ institutionMembershipSchema.index({ institutionId: 1, userId: 1 }, { unique: tru
 // Query optimization indexes for role lookups and tenant queries
 institutionMembershipSchema.index({ institutionId: 1, role: 1 });
 institutionMembershipSchema.index({ institutionId: 1, status: 1 });
+institutionMembershipSchema.index({ institutionId: 1, department: 1 });
 institutionMembershipSchema.index({ userId: 1, status: 1 });
 
 export default mongoose.model<IInstitutionMembership>(

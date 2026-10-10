@@ -3,6 +3,7 @@ import {
   registerUser,
   loginUser,
   getCurrentUser,
+  updateUserRole,
 } from "../services/auth_service";
 
 export const registerController = async (
@@ -96,3 +97,50 @@ export const meController = async (
     });
   }
 };
+
+export const selectRoleController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.substring(7).trim()
+      : undefined;
+
+    const userId = token || req.body.userId || (req.query.userId as string);
+    const email = req.body.email || (req.query.email as string);
+    const role = req.body.role;
+
+    if (!role) {
+      res.status(400).json({
+        success: false,
+        message: "Role is required",
+      });
+      return;
+    }
+
+    if (!userId && !email) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication token, user ID, or email is required",
+      });
+      return;
+    }
+
+    const result = await updateUserRole({ userId, email, role });
+    res.status(200).json({
+      success: true,
+      message: "Role updated successfully",
+      data: result,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to update role";
+    res.status(400).json({
+      success: false,
+      message,
+    });
+  }
+};
+
