@@ -29,14 +29,26 @@ import studentRecognitionRoutes from "./routes/student_recognition_routes";
 import courseRoutes from "./routes/course_routes";
 import learnerCourseRoutes from "./routes/learner_course_routes";
 import institutionRoutes from "./routes/institution_routes";
+import ssoRoutes from "./routes/sso_routes";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// Content-Security-Policy: restrict iframe embedding strictly to verified School and College ERP origins
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "frame-ancestors 'self' http://localhost:3001 http://localhost:3002 http://localhost:5173"
+  );
+  next();
+});
+
 app.use("/uploads", express.static(path.resolve("uploads")));
 app.use("/api/auth", authRoutes);
+app.use("/api/sso", ssoRoutes);
 app.use("/api/institutions", institutionRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/learner", learnerCourseRoutes);
@@ -80,7 +92,10 @@ app.get("/", (req, res) => {
   });
 });
 
+import { validateSSOConfigurationOnStartup } from "./services/sso_service";
+
 const startServer = async (): Promise<void> => {
+  validateSSOConfigurationOnStartup();
   await connectDB();
 
   app.listen(PORT, () => {
@@ -88,4 +103,13 @@ const startServer = async (): Promise<void> => {
   });
 };
 
-startServer();
+export { app, startServer };
+export default app;
+
+const isDirectRun =
+  Boolean(process.argv[1] &&
+  (process.argv[1].endsWith("server.ts") || process.argv[1].endsWith("server.js")));
+
+if (isDirectRun && process.env.NODE_ENV !== "test") {
+  startServer();
+}

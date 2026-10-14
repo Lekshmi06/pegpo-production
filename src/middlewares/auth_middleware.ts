@@ -10,6 +10,14 @@ import InstitutionMembership, {
   IInstitutionMembership,
   InstitutionRole,
 } from "../models/InstitutionMembership";
+import {
+  verifySSOToken,
+  resolveSSOIdentity,
+  SSOAuthError,
+  SSORole,
+  SSOSourceSystem,
+  SSOTokenPayload,
+} from "../services/sso_service";
 
 // Augment Express Request interface with authenticated student/teacher/researcher/institution data
 declare global {
@@ -22,6 +30,7 @@ declare global {
       institution?: IInstitution;
       institutionMembership?: IInstitutionMembership;
       institutionId?: string;
+      ssoPayload?: SSOTokenPayload;
     }
   }
 }
@@ -55,6 +64,29 @@ export const authenticateStudent = async (
       (req.query.studentProfileId as string);
 
     const credentialsProvided = Boolean(rawUserId || rawProfileId);
+
+    // Enforce that SSO launch tokens cannot be used directly as general session credentials
+    if (bearerToken && bearerToken.split(".").length === 3) {
+      try {
+        const decodedPayload = JSON.parse(
+          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
+        );
+        if (
+          decodedPayload.iss &&
+          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
+        ) {
+          res.status(401).json({
+            success: false,
+            message:
+              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+            code: "SSO_EXCHANGE_REQUIRED",
+          });
+          return;
+        }
+      } catch {
+        // Not a JSON JWT or not an SSO token; proceed with normal student credentials check
+      }
+    }
 
     let user: IUser | null = null;
     let studentProfile: IStudentProfile | null = null;
@@ -235,6 +267,29 @@ export const authenticateTeacher = async (
       (req.query.teacherProfileId as string);
 
     const credentialsProvided = Boolean(rawUserId || rawProfileId);
+
+    // Enforce that SSO launch tokens cannot be used directly as general session credentials
+    if (bearerToken && bearerToken.split(".").length === 3) {
+      try {
+        const decodedPayload = JSON.parse(
+          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
+        );
+        if (
+          decodedPayload.iss &&
+          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
+        ) {
+          res.status(401).json({
+            success: false,
+            message:
+              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+            code: "SSO_EXCHANGE_REQUIRED",
+          });
+          return;
+        }
+      } catch {
+        // Not a JSON JWT or not an SSO token; proceed with normal teacher credentials check
+      }
+    }
 
     let user: IUser | null = null;
     let teacherProfile: ITeacherProfile | null = null;
@@ -620,6 +675,29 @@ export const authenticateUser = async (
       return;
     }
 
+    // Enforce that SSO launch tokens cannot be used directly as general session credentials
+    if (bearerToken && bearerToken.split(".").length === 3) {
+      try {
+        const decodedPayload = JSON.parse(
+          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
+        );
+        if (
+          decodedPayload.iss &&
+          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
+        ) {
+          res.status(401).json({
+            success: false,
+            message:
+              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+            code: "SSO_EXCHANGE_REQUIRED",
+          });
+          return;
+        }
+      } catch {
+        // Not a JSON JWT or not an SSO token; proceed with standard user credentials check
+      }
+    }
+
     if (!mongoose.Types.ObjectId.isValid(rawUserId)) {
       res.status(401).json({
         success: false,
@@ -897,5 +975,69 @@ export const requireInstitutionPermission = (requiredPermission: string | string
         message: "Forbidden: Insufficient privileges for this operation.",
       });
     });
+  };
+};
+
+/**
+ * Dedicated SSO Token Guard Middleware
+ * Validates cryptographic SSO token from Authorization header or x-sso-token.
+ * Enforces role and source system constraints.
+ */
+export const requireSSOToken = (
+  allowedRoles?: SSORole[],
+  allowedSources?: SSOSourceSystem[]
+) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const authHeader = req.headers.authorization;
+      const bearerToken = authHeader?.startsWith("Bearer ")
+        ? authHeader.substring(7).trim()
+        : (req.headers["x-sso-token"] as string);
+
+      if (!bearerToken) {
+        res.status(401).json({
+          success: false,
+          message: "SSO token required in Authorization header or x-sso-token.",
+          code: "MISSING_SSO_TOKEN",
+        });
+        return;
+      }
+
+      const payload = verifySSOToken(bearerToken);
+
+      if (allowedRoles && !allowedRoles.includes(payload.role)) {
+        res.status(403).json({
+          success: false,
+          message: `Access forbidden: Role '${payload.role}' is not authorized for this resource.`,
+          code: "FORBIDDEN_ROLE",
+        });
+        return;
+      }
+
+      if (allowedSources && !allowedSources.includes(payload.sourceSystem)) {
+        res.status(403).json({
+          success: false,
+          message: `Access forbidden: Source system '${payload.sourceSystem}' is not authorized for this resource.`,
+          code: "FORBIDDEN_SOURCE",
+        });
+        return;
+      }
+
+      const { user, profile } = await resolveSSOIdentity(payload);
+      req.user = user;
+      if (payload.role === "teacher") req.teacherProfile = profile;
+      if (payload.role === "student") req.studentProfile = profile;
+      req.ssoPayload = payload;
+
+      next();
+    } catch (err: any) {
+      const statusCode = err instanceof SSOAuthError ? err.statusCode : 500;
+      const code = err instanceof SSOAuthError ? err.code : "SSO_ERROR";
+      res.status(statusCode).json({
+        success: false,
+        message: err.message || "Failed to validate SSO token",
+        code,
+      });
+    }
   };
 };

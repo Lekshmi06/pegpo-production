@@ -128,7 +128,6 @@ async function runTests() {
       createResult.institution._id.toString(),
       {
         name: "Security & Cloud Ops",
-        code: "SEC-OPS",
         description: "DevSecOps and site reliability engineering",
         teams: ["Infra Sec", "Incident Response", "Compliance"],
       }

@@ -11,12 +11,23 @@ export type UserRole =
   | "provider"
   | "learner";
 
+export interface IUserExternalIdentity {
+  sourceSystem: "school" | "college";
+  externalUserId: string;
+  namespace: string;
+  institutionId?: string;
+  mappedAt?: Date;
+}
+
 export interface IUser extends Document {
   email: string;
   password?: string;
   name?: string;
   userType: UserRole;
   language?: string;
+  status?: "active" | "suspended" | "deactivated";
+  isSuspended?: boolean;
+  externalIdentity?: IUserExternalIdentity;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,10 +75,38 @@ const userSchema = new Schema<IUser>(
       trim: true,
       default: "English",
     },
+
+    status: {
+      type: String,
+      enum: ["active", "suspended", "deactivated"],
+      default: "active",
+    },
+
+    isSuspended: {
+      type: Boolean,
+      default: false,
+    },
+
+    externalIdentity: {
+      sourceSystem: { type: String, enum: ["school", "college"] },
+      externalUserId: { type: String, trim: true },
+      namespace: { type: String, trim: true },
+      institutionId: { type: String, trim: true },
+      mappedAt: { type: Date, default: Date.now },
+    },
   },
   {
     timestamps: true,
   }
+);
+
+userSchema.index(
+  { "externalIdentity.namespace": 1 },
+  { sparse: true }
+);
+userSchema.index(
+  { "externalIdentity.sourceSystem": 1, "externalIdentity.externalUserId": 1 },
+  { sparse: true }
 );
 
 const User = mongoose.model<IUser>("User", userSchema);

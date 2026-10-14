@@ -201,7 +201,7 @@ export async function processTeacherAIChatQuery(
     .map((m) => `${m.sender === "user" ? "Teacher" : "AI Copilot"}: ${m.text}`)
     .join("\n");
 
-  const prompt = `You are Pegpo Teacher Copilot, an elite AI Teaching Assistant, Academic Mentor, and Pedagogical Advisor built specifically for school teachers and educators.
+  const prompt = `You are EduPye Teacher Copilot, an elite AI Teaching Assistant, Academic Mentor, and Pedagogical Advisor built specifically for school teachers and educators.
 You are assisting ${teacherName}, who teaches ${activeSubject} (${activeClass}, ${activeBoard}).
 Current Workspace Screen: ${pageContext?.pageTitle || pageContext?.pathname || "Teacher Classroom Hub"}.
 
