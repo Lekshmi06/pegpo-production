@@ -120,6 +120,8 @@ const validateUpdateData = (body: unknown): string | null => {
     ) {
       return "Education level is invalid";
     }
+  }
+
   if (data.studyPreferences !== undefined) {
     if (
       !data.studyPreferences ||
@@ -267,6 +269,15 @@ export const updateStudentController = async (
       res.status(400).json({
         success: false,
         message: "Invalid student ID",
+      });
+      return;
+    }
+
+    // Strict user-level access isolation: caller can only update their own student profile
+    if (req.studentProfile && req.studentProfile._id.toString() !== id) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: You cannot update another student's profile.",
       });
       return;
     }

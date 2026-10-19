@@ -21,6 +21,6 @@ router.post("/", createStudentController);
 router.get("/search", searchStudentController);
 router.get("/by-email/:email", getStudentByEmailController);
 router.get("/:id", getStudentController);
-router.put("/:id", updateStudentController);
+router.put("/:id", authenticateStudent, updateStudentController);
 
 export default router;
