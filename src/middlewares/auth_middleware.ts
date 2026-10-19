@@ -18,6 +18,7 @@ import {
   SSOSourceSystem,
   SSOTokenPayload,
 } from "../services/sso_service";
+import { verifySessionToken } from "../utils/token";
 
 // Augment Express Request interface with authenticated student/teacher/researcher/institution data
 declare global {
@@ -36,12 +37,52 @@ declare global {
 }
 
 /**
+ * Helper to safely extract and cryptographically verify session tokens from request headers.
+ * Rejects unexchanged SSO launch tokens to prevent cross-protocol credential misuse.
+ */
+function resolveUserIdFromAuthHeader(req: Request): {
+  userId?: string;
+  isInvalid?: boolean;
+  isSsoLaunchToken?: boolean;
+} {
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith("Bearer ")
+    ? authHeader.substring(7).trim()
+    : undefined;
+
+  const rawToken = bearerToken || (req.headers["x-user-id"] as string);
+  if (!rawToken) {
+    return {};
+  }
+
+  // Detect unexchanged SSO launch tokens
+  if (rawToken.split(".").length === 3) {
+    try {
+      const decodedPayload = JSON.parse(
+        Buffer.from(rawToken.split(".")[1], "base64url").toString("utf8")
+      );
+      if (
+        decodedPayload.iss &&
+        (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
+      ) {
+        return { isSsoLaunchToken: true, isInvalid: true };
+      }
+    } catch {
+      // Not a valid JSON payload, proceed
+    }
+  }
+
+  const payload = verifySessionToken(rawToken);
+  if (payload?.userId) {
+    return { userId: payload.userId };
+  }
+
+  return { isInvalid: true };
+}
+
+/**
  * Resolves the authenticated User and their linked StudentProfile.
- * Supports:
- * - Authorization: Bearer <userId>
- * - x-user-id header
- * - x-student-profile-id header
- * - userId or studentProfileId query parameters
+ * Strictly verifies JWT session token from Authorization: Bearer <token>.
  */
 export const authenticateStudent = async (
   req: Request,
@@ -49,85 +90,50 @@ export const authenticateStudent = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
+    const { userId, isInvalid, isSsoLaunchToken } = resolveUserIdFromAuthHeader(req);
 
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
+    if (isSsoLaunchToken) {
+      res.status(401).json({
+        success: false,
+        message:
+          "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+        code: "SSO_EXCHANGE_REQUIRED",
+      });
+      return;
+    }
+
+    if (isInvalid) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid or expired authentication token.",
+      });
+      return;
+    }
 
     const rawProfileId =
       (req.headers["x-student-profile-id"] as string) ||
-      (req.query.studentProfileId as string);
-
-    const credentialsProvided = Boolean(rawUserId || rawProfileId);
-
-    // Enforce that SSO launch tokens cannot be used directly as general session credentials
-    if (bearerToken && bearerToken.split(".").length === 3) {
-      try {
-        const decodedPayload = JSON.parse(
-          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
-        );
-        if (
-          decodedPayload.iss &&
-          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
-        ) {
-          res.status(401).json({
-            success: false,
-            message:
-              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
-            code: "SSO_EXCHANGE_REQUIRED",
-          });
-          return;
-        }
-      } catch {
-        // Not a JSON JWT or not an SSO token; proceed with normal student credentials check
-      }
-    }
+      (req.query?.studentProfileId as string);
 
     let user: IUser | null = null;
     let studentProfile: IStudentProfile | null = null;
 
-    // 1. Resolve by StudentProfile ID if provided
-    if (rawProfileId) {
-      if (mongoose.Types.ObjectId.isValid(rawProfileId)) {
-        studentProfile = await StudentProfile.findById(rawProfileId);
-        if (studentProfile) {
-          user = await User.findById(studentProfile.userId);
+    // 1. Resolve by verified User ID
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      user = await User.findById(userId);
+      if (user) {
+        if (rawProfileId && mongoose.Types.ObjectId.isValid(rawProfileId)) {
+          studentProfile = await StudentProfile.findOne({
+            _id: rawProfileId,
+            userId: user._id,
+          });
         }
-      }
-      // If a specific profile ID was provided by client but not found in DB
-      if (!studentProfile && credentialsProvided) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid student profile ID or profile not found.",
-        });
-        return;
-      }
-    }
-
-    // 2. Resolve by User ID if not resolved yet
-    if (!user && rawUserId) {
-      if (mongoose.Types.ObjectId.isValid(rawUserId)) {
-        user = await User.findById(rawUserId);
-        if (user) {
+        if (!studentProfile) {
           studentProfile = await StudentProfile.findOne({ userId: user._id });
         }
       }
-      // If a specific user ID/token was provided by client but not found in DB
-      if (!user && credentialsProvided) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid authentication token or user not found.",
-        });
-        return;
-      }
     }
 
-    // 3. Fallback: if user exists but profile missing, create/attach default profile
+    // 2. Fallback: if user exists but profile missing, create default student profile
     if (user && !studentProfile) {
       const resolvedName =
         user.name ||
@@ -149,35 +155,12 @@ export const authenticateStudent = async (
           board: "CBSE",
           classLevel: "Class 10",
           studyMode: "full_syllabus",
-          selectedSubject: "Science",
+          selectedSubject: "Mathematics",
         },
       });
     }
 
-    // 4. If credentials were provided but could not be validated
-    if (credentialsProvided && (!user || !studentProfile)) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid student credentials.",
-      });
-      return;
-    }
-
-    // 5. If NO credentials were provided at all:
     if (!user || !studentProfile) {
-      if (process.env.NODE_ENV !== "production") {
-        const devStudent = await StudentProfile.findOne();
-        if (devStudent) {
-          const devUser = await User.findById(devStudent.userId);
-          if (devUser) {
-            req.user = devUser;
-            req.studentProfile = devStudent;
-            next();
-            return;
-          }
-        }
-      }
-
       res.status(401).json({
         success: false,
         message: "Authentication required. Please log in as a student.",
@@ -207,29 +190,9 @@ export const optionalAuthenticateStudent = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
-
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
-
-    const rawProfileId =
-      (req.headers["x-student-profile-id"] as string) ||
-      (req.query.studentProfileId as string);
-
-    if (rawProfileId && mongoose.Types.ObjectId.isValid(rawProfileId)) {
-      const profile = await StudentProfile.findById(rawProfileId);
-      if (profile) {
-        req.studentProfile = profile;
-        const u = await User.findById(profile.userId);
-        if (u) req.user = u;
-      }
-    } else if (rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
-      const u = await User.findById(rawUserId);
+    const { userId } = resolveUserIdFromAuthHeader(req);
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      const u = await User.findById(userId);
       if (u) {
         req.user = u;
         const profile = await StudentProfile.findOne({ userId: u._id });
@@ -244,7 +207,7 @@ export const optionalAuthenticateStudent = async (
 
 /**
  * Resolves the authenticated User and their linked TeacherProfile.
- * Strictly checks that the resolved profile is owned by the user.
+ * Strictly verifies JWT session token from Authorization: Bearer <token>.
  */
 export const authenticateTeacher = async (
   req: Request,
@@ -252,79 +215,37 @@ export const authenticateTeacher = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
+    const { userId, isInvalid, isSsoLaunchToken } = resolveUserIdFromAuthHeader(req);
 
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
+    if (isSsoLaunchToken) {
+      res.status(401).json({
+        success: false,
+        message:
+          "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+        code: "SSO_EXCHANGE_REQUIRED",
+      });
+      return;
+    }
 
-    const rawProfileId =
-      (req.headers["x-teacher-profile-id"] as string) ||
-      (req.query.teacherProfileId as string);
-
-    const credentialsProvided = Boolean(rawUserId || rawProfileId);
-
-    // Enforce that SSO launch tokens cannot be used directly as general session credentials
-    if (bearerToken && bearerToken.split(".").length === 3) {
-      try {
-        const decodedPayload = JSON.parse(
-          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
-        );
-        if (
-          decodedPayload.iss &&
-          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
-        ) {
-          res.status(401).json({
-            success: false,
-            message:
-              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
-            code: "SSO_EXCHANGE_REQUIRED",
-          });
-          return;
-        }
-      } catch {
-        // Not a JSON JWT or not an SSO token; proceed with normal teacher credentials check
-      }
+    if (isInvalid) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid or expired authentication token.",
+      });
+      return;
     }
 
     let user: IUser | null = null;
     let teacherProfile: ITeacherProfile | null = null;
 
-    // 1. Resolve by TeacherProfile ID if provided
-    if (rawProfileId && mongoose.Types.ObjectId.isValid(rawProfileId)) {
-      teacherProfile = await TeacherProfile.findById(rawProfileId);
-      if (teacherProfile) {
-        user = await User.findById(teacherProfile.userId);
-      }
-      if (!teacherProfile && credentialsProvided) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid teacher profile ID or profile not found.",
-        });
-        return;
-      }
-    }
-
-    // 2. Resolve by User ID if not resolved yet
-    if (!user && rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
-      user = await User.findById(rawUserId);
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      user = await User.findById(userId);
       if (user) {
         teacherProfile = await TeacherProfile.findOne({ userId: user._id });
       }
-      if (!user && credentialsProvided) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid authentication token or user not found.",
-        });
-        return;
-      }
     }
 
-    // 3. Fallback: if user exists as teacher but profile missing, create/attach default profile
+    // Fallback: if user exists as teacher but profile missing, create default profile
     if (user && !teacherProfile && user.userType === "teacher") {
       const resolvedName =
         user.name ||
@@ -338,30 +259,7 @@ export const authenticateTeacher = async (
       });
     }
 
-    // 4. Validate credentials
-    if (credentialsProvided && (!user || !teacherProfile)) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid teacher credentials.",
-      });
-      return;
-    }
-
-    // 5. If no credentials provided, in development fallback to first teacher profile
     if (!user || !teacherProfile) {
-      if (process.env.NODE_ENV !== "production") {
-        const devTeacher = await TeacherProfile.findOne();
-        if (devTeacher) {
-          const devUser = await User.findById(devTeacher.userId);
-          if (devUser) {
-            req.user = devUser;
-            req.teacherProfile = devTeacher;
-            next();
-            return;
-          }
-        }
-      }
-
       res.status(401).json({
         success: false,
         message: "Authentication required. Please log in as a teacher.",
@@ -384,11 +282,8 @@ export const authenticateTeacher = async (
 
 /**
  * Resolves the authenticated User and their linked ResearcherProfile.
- * Supports:
- * - Authorization: Bearer <userId>
- * - x-user-id header
- * - x-researcher-profile-id header
- * - userId or researcherProfileId query parameters
+ * Authenticates strictly via cryptographic session token.
+ * Prevents unauthenticated identity spoofing and unverified role tampering.
  */
 export const authenticateResearcher = async (
   req: Request,
@@ -396,73 +291,47 @@ export const authenticateResearcher = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
+    const { userId, isInvalid, isSsoLaunchToken } = resolveUserIdFromAuthHeader(req);
 
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
-
-    const rawProfileId =
-      (req.headers["x-researcher-profile-id"] as string) ||
-      (req.query.researcherProfileId as string);
-
-    const rawEmail = (req.headers["x-user-email"] as string)?.trim().toLowerCase() ||
-      (req.query.email as string)?.trim().toLowerCase();
-
-    const credentialsProvided = Boolean(rawUserId || rawProfileId || rawEmail);
-
-    let user: IUser | null = null;
-    let researcherProfile: IResearcherProfile | null = null;
-
-    // 1. Resolve by ResearcherProfile ID if provided
-    if (rawProfileId && mongoose.Types.ObjectId.isValid(rawProfileId)) {
-      researcherProfile = await ResearcherProfile.findById(rawProfileId);
-      if (researcherProfile) {
-        user = await User.findById(researcherProfile.userId);
-      }
-      if (!researcherProfile && credentialsProvided && !rawUserId && !rawEmail) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid researcher profile ID or profile not found.",
-        });
-        return;
-      }
+    if (isSsoLaunchToken) {
+      res.status(401).json({
+        success: false,
+        message:
+          "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+        code: "SSO_EXCHANGE_REQUIRED",
+      });
+      return;
     }
 
-    // 2. Resolve by User ID if not resolved yet
-    if (!user && rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
-      user = await User.findById(rawUserId);
-      if (user) {
-        researcherProfile = await ResearcherProfile.findOne({ userId: user._id });
-      }
-      if (!user && credentialsProvided && !rawEmail) {
-        res.status(401).json({
-          success: false,
-          message: "Invalid authentication token or user not found.",
-        });
-        return;
-      }
+    if (isInvalid || !userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in as a researcher.",
+      });
+      return;
     }
 
-    // 3. Resolve by Email if not resolved yet
-    if (!user && rawEmail) {
-      user = await User.findOne({ email: rawEmail });
-      if (user) {
-        researcherProfile = await ResearcherProfile.findOne({ userId: user._id });
-      }
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+      return;
     }
 
-    // 4. Fallback: if user exists, create/attach profile and ensure researcher role
-    if (user && !researcherProfile) {
-      if (user.userType !== "researcher") {
-        user.userType = "researcher";
-        await user.save();
-      }
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "User not found or session expired.",
+      });
+      return;
+    }
 
+    let researcherProfile = await ResearcherProfile.findOne({ userId: user._id });
+
+    // Only create profile if the user already has the researcher role
+    if (!researcherProfile && user.userType === "researcher") {
       const resolvedName =
         user.name ||
         user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -476,33 +345,10 @@ export const authenticateResearcher = async (
       });
     }
 
-    // 4. Validate credentials
-    if (credentialsProvided && (!user || !researcherProfile)) {
-      res.status(401).json({
+    if (!researcherProfile) {
+      res.status(403).json({
         success: false,
-        message: "Invalid researcher credentials.",
-      });
-      return;
-    }
-
-    // 5. In development, fallback to first researcher profile if no credentials provided
-    if (!user || !researcherProfile) {
-      if (process.env.NODE_ENV !== "production") {
-        const devResearcher = await ResearcherProfile.findOne();
-        if (devResearcher) {
-          const devUser = await User.findById(devResearcher.userId);
-          if (devUser) {
-            req.user = devUser;
-            req.researcherProfile = devResearcher;
-            next();
-            return;
-          }
-        }
-      }
-
-      res.status(401).json({
-        success: false,
-        message: "Authentication required. Please log in as a researcher.",
+        message: "Forbidden: Active researcher profile required.",
       });
       return;
     }
@@ -530,104 +376,56 @@ export const authenticateStudentOrTeacher = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
+    const { userId, isInvalid, isSsoLaunchToken } = resolveUserIdFromAuthHeader(req);
 
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
+    if (isSsoLaunchToken) {
+      res.status(401).json({
+        success: false,
+        message:
+          "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+        code: "SSO_EXCHANGE_REQUIRED",
+      });
+      return;
+    }
 
-    const rawStudentProfileId =
-      (req.headers["x-student-profile-id"] as string) ||
-      (req.query.studentProfileId as string);
+    if (isInvalid || !userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in as a student or teacher.",
+      });
+      return;
+    }
 
-    const rawTeacherProfileId =
-      (req.headers["x-teacher-profile-id"] as string) ||
-      (req.query.teacherProfileId as string);
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+      return;
+    }
 
-    // 1. Try explicit teacher profile ID
-    if (rawTeacherProfileId && mongoose.Types.ObjectId.isValid(rawTeacherProfileId)) {
-      const teacherProfile = await TeacherProfile.findById(rawTeacherProfileId);
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "User not found or session expired.",
+      });
+      return;
+    }
+
+    req.user = user;
+
+    if (user.userType === "teacher") {
+      const teacherProfile = await TeacherProfile.findOne({ userId: user._id });
       if (teacherProfile) {
         req.teacherProfile = teacherProfile;
-        const u = await User.findById(teacherProfile.userId);
-        if (u) req.user = u;
         next();
         return;
       }
-    }
-
-    // 2. Try explicit student profile ID
-    if (rawStudentProfileId && mongoose.Types.ObjectId.isValid(rawStudentProfileId)) {
-      const studentProfile = await StudentProfile.findById(rawStudentProfileId);
+    } else {
+      const studentProfile = await StudentProfile.findOne({ userId: user._id });
       if (studentProfile) {
         req.studentProfile = studentProfile;
-        const u = await User.findById(studentProfile.userId);
-        if (u) req.user = u;
-        next();
-        return;
-      }
-    }
-
-    // 3. Resolve by user ID / Bearer token
-    if (rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
-      const user = await User.findById(rawUserId);
-      if (user) {
-        req.user = user;
-        if (user.userType === "teacher") {
-          const teacherProfile = await TeacherProfile.findOne({ userId: user._id });
-          if (teacherProfile) {
-            req.teacherProfile = teacherProfile;
-            next();
-            return;
-          }
-        } else {
-          const studentProfile = await StudentProfile.findOne({ userId: user._id });
-          if (studentProfile) {
-            req.studentProfile = studentProfile;
-            next();
-            return;
-          }
-        }
-      }
-    }
-
-    // 4. In development mode fallback
-    if (process.env.NODE_ENV !== "production") {
-      if (rawTeacherProfileId) {
-        const devTeacher = await TeacherProfile.findOne();
-        if (devTeacher) {
-          req.teacherProfile = devTeacher;
-          const u = await User.findById(devTeacher.userId);
-          if (u) req.user = u;
-          next();
-          return;
-        }
-      }
-
-      const routeStudentId = Array.isArray(req.params.studentId)
-        ? req.params.studentId[0]
-        : req.params.studentId;
-
-      if (routeStudentId && mongoose.Types.ObjectId.isValid(routeStudentId)) {
-        const studentProfile = await StudentProfile.findById(routeStudentId);
-        if (studentProfile) {
-          req.studentProfile = studentProfile;
-          const u = await User.findById(studentProfile.userId);
-          if (u) req.user = u;
-          next();
-          return;
-        }
-      }
-
-      const devStudent = await StudentProfile.findOne();
-      if (devStudent) {
-        req.studentProfile = devStudent;
-        const u = await User.findById(devStudent.userId);
-        if (u) req.user = u;
         next();
         return;
       }
@@ -647,9 +445,9 @@ export const authenticateStudentOrTeacher = async (
 };
 
 /**
- * General user authentication middleware for Course Marketplace.
- * Checks for Bearer token or x-user-id header or userId query param.
- * Returns 401 if missing or invalid.
+ * General user authentication middleware for Core API routes.
+ * Checks for cryptographic Bearer token.
+ * Returns 401 if missing, invalid, or expired.
  */
 export const authenticateUser = async (
   req: Request,
@@ -657,17 +455,19 @@ export const authenticateUser = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
+    const { userId, isInvalid, isSsoLaunchToken } = resolveUserIdFromAuthHeader(req);
 
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
+    if (isSsoLaunchToken) {
+      res.status(401).json({
+        success: false,
+        message:
+          "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
+        code: "SSO_EXCHANGE_REQUIRED",
+      });
+      return;
+    }
 
-    if (!rawUserId) {
+    if (isInvalid || !userId) {
       res.status(401).json({
         success: false,
         message: "Authentication required. Please log in.",
@@ -675,30 +475,7 @@ export const authenticateUser = async (
       return;
     }
 
-    // Enforce that SSO launch tokens cannot be used directly as general session credentials
-    if (bearerToken && bearerToken.split(".").length === 3) {
-      try {
-        const decodedPayload = JSON.parse(
-          Buffer.from(bearerToken.split(".")[1], "base64url").toString("utf8")
-        );
-        if (
-          decodedPayload.iss &&
-          (decodedPayload.iss === "edupye:school" || decodedPayload.iss === "edupye:college")
-        ) {
-          res.status(401).json({
-            success: false,
-            message:
-              "SSO launch tokens cannot be used as direct Core session credentials. Please exchange this token via POST /api/sso/exchange first.",
-            code: "SSO_EXCHANGE_REQUIRED",
-          });
-          return;
-        }
-      } catch {
-        // Not a JSON JWT or not an SSO token; proceed with standard user credentials check
-      }
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(rawUserId)) {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
       res.status(401).json({
         success: false,
         message: "Invalid authentication token.",
@@ -706,7 +483,7 @@ export const authenticateUser = async (
       return;
     }
 
-    const user = await User.findById(rawUserId);
+    const user = await User.findById(userId);
     if (!user) {
       res.status(401).json({
         success: false,
@@ -728,8 +505,8 @@ export const authenticateUser = async (
 
 /**
  * Provider-specific authorization middleware.
- * Ensures the authenticated user has the 'provider' role.
- * Returns 403 if user is not a provider.
+ * Ensures the authenticated user has the 'provider' or 'teacher' role.
+ * Returns 403 if user is not authorized.
  */
 export const authenticateProvider = async (
   req: Request,
@@ -789,18 +566,9 @@ export const optionalAuthenticateUser = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.substring(7).trim()
-      : undefined;
-
-    const rawUserId =
-      bearerToken ||
-      (req.headers["x-user-id"] as string) ||
-      (req.query.userId as string);
-
-    if (rawUserId && mongoose.Types.ObjectId.isValid(rawUserId)) {
-      const user = await User.findById(rawUserId);
+    const { userId } = resolveUserIdFromAuthHeader(req);
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      const user = await User.findById(userId);
       if (user) {
         req.user = user;
       }
@@ -867,7 +635,6 @@ export const authenticateInstitutionMember = (allowedRoles?: InstitutionRole[]) 
         if (!membership) {
           const institutionDoc = await Institution.findById(institutionId);
           if (institutionDoc && institutionDoc.owner.toString() === req.user._id.toString()) {
-            // Auto-heal/sync owner membership as admin if missing
             membership = await InstitutionMembership.findOneAndUpdate(
               { institutionId, userId: req.user._id },
               {
@@ -892,7 +659,6 @@ export const authenticateInstitutionMember = (allowedRoles?: InstitutionRole[]) 
           return;
         }
 
-        // Verify role restriction if provided
         if (allowedRoles && allowedRoles.length > 0) {
           if (!allowedRoles.includes(membership.role)) {
             res.status(403).json({
@@ -923,9 +689,6 @@ export const requireInstitutionStaff = authenticateInstitutionMember(["admin", "
 
 /**
  * Granular Permission Middleware
- * Admin is always granted access.
- * Sub-Admin is checked for explicit permission in membership.permissions array.
- * Other roles are denied with 403 Forbidden.
  */
 export const requireInstitutionPermission = (requiredPermission: string | string[]) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {

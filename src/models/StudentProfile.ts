@@ -77,6 +77,15 @@ export interface IStudentProfile extends Document {
   undergraduateDetails?: IUndergraduateDetails;
   postgraduateDetails?: IPostgraduateDetails;
   competitiveExamDetails?: ICompetitiveExamDetails;
+  studyPreferences?: {
+    category?: string;
+    goal?: string;
+    currentScore?: string;
+    hasTakenExam?: boolean;
+    targetScore?: string;
+    preferredTools?: string[];
+    uploadedMaterialFileName?: string;
+  };
 
   createdAt: Date;
   updatedAt: Date;
@@ -225,6 +234,16 @@ const studentProfileSchema = new Schema<IStudentProfile>(
       category: { type: String, trim: true },
       preparationMode: { type: String, trim: true },
       syllabusFileName: { type: String, trim: true },
+    },
+
+    studyPreferences: {
+      category: { type: String, trim: true },
+      goal: { type: String, trim: true },
+      currentScore: { type: String, trim: true },
+      hasTakenExam: { type: Boolean },
+      targetScore: { type: String, trim: true },
+      preferredTools: [{ type: String, trim: true }],
+      uploadedMaterialFileName: { type: String, trim: true },
     },
   },
   {

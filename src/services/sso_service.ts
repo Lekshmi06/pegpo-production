@@ -4,6 +4,7 @@ import User, { IUser } from "../models/User";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeachingContext from "../models/TeachingContext";
+import { generateSessionToken } from "../utils/token";
 
 export type SSOSourceSystem = "school" | "college";
 export type SSORole = "teacher" | "student";
@@ -718,7 +719,7 @@ export async function exchangeSSOToken(ssoToken: string): Promise<SSOExchangeRes
   }
 
   // 6. Return authenticated Core session
-  const coreSessionToken = (user._id as any).toString();
+  const coreSessionToken = generateSessionToken(user);
 
   return {
     token: coreSessionToken,

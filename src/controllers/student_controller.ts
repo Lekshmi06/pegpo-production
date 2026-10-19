@@ -7,6 +7,10 @@ import {
   updateStudent,
   UpdateStudentData,
 } from "../services/student_service";
+import {
+  getStudentAnalyticsData,
+  recordStudentStudySession,
+} from "../services/student_analytics_service";
 
 const educationLevels = [
   "school",
@@ -31,6 +35,7 @@ const updateableFields = [
   "postgraduateDetails",
   "competitiveExamDetails",
   "language",
+  "studyPreferences",
 ];
 const educationFields = [
   "level",
@@ -114,6 +119,14 @@ const validateUpdateData = (body: unknown): string | null => {
       )
     ) {
       return "Education level is invalid";
+    }
+  if (data.studyPreferences !== undefined) {
+    if (
+      !data.studyPreferences ||
+      typeof data.studyPreferences !== "object" ||
+      Array.isArray(data.studyPreferences)
+    ) {
+      return "Field 'studyPreferences' must be an object";
     }
   }
 
@@ -343,6 +356,82 @@ export const searchStudentController = async (
     res.status(500).json({
       success: false,
       message: error?.message || "Failed to search student",
+    });
+  }
+};
+
+export const getStudentAnalyticsController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const user = req.user;
+    if (!user || !user._id) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required to access student analytics.",
+      });
+      return;
+    }
+
+    const analytics = await getStudentAnalyticsData(
+      user._id.toString(),
+      req.studentProfile?._id?.toString()
+    );
+
+    res.status(200).json({
+      success: true,
+      data: analytics,
+    });
+  } catch (error: any) {
+    console.error("getStudentAnalyticsController error:", error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || "Failed to retrieve student analytics",
+    });
+  }
+};
+
+export const recordStudySessionController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const user = req.user;
+    if (!user || !user._id) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required to record study session.",
+      });
+      return;
+    }
+
+    const { durationSeconds, activityType, subject, notes } = req.body || {};
+    if (!durationSeconds || typeof durationSeconds !== "number" || durationSeconds <= 0) {
+      res.status(400).json({
+        success: false,
+        message: "durationSeconds must be a positive number.",
+      });
+      return;
+    }
+
+    const session = await recordStudentStudySession(user._id.toString(), {
+      durationSeconds,
+      activityType: activityType || "practice",
+      subject: subject || "General",
+      notes: notes || "",
+    });
+
+    res.status(201).json({
+      success: true,
+      data: session,
+      message: "Study session recorded successfully.",
+    });
+  } catch (error: any) {
+    console.error("recordStudySessionController error:", error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || "Failed to record study session",
     });
   }
 };

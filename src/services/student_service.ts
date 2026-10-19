@@ -54,6 +54,15 @@ export interface UpdateStudentData {
   undergraduateDetails?: IUndergraduateDetails;
   postgraduateDetails?: IPostgraduateDetails;
   competitiveExamDetails?: ICompetitiveExamDetails;
+  studyPreferences?: {
+    category?: string;
+    goal?: string;
+    currentScore?: string;
+    hasTakenExam?: boolean;
+    targetScore?: string;
+    preferredTools?: string[];
+    uploadedMaterialFileName?: string;
+  };
 }
 
 export const createStudent = async (data: CreateStudentData) => {
@@ -195,6 +204,10 @@ export const updateStudent = async (
 
   if (data.competitiveExamDetails !== undefined) {
     studentUpdate.competitiveExamDetails = data.competitiveExamDetails;
+  }
+
+  if (data.studyPreferences !== undefined) {
+    studentUpdate.studyPreferences = data.studyPreferences;
   }
 
   // First confirm that the student profile exists.

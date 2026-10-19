@@ -3,7 +3,8 @@ import User, { IUser, UserRole } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
-
+import { hashPassword, verifyPassword, isLegacyPlaintext } from "../utils/password";
+import { generateSessionToken } from "../utils/token";
 
 export interface RegisterInput {
   email: string;
@@ -42,6 +43,15 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
     throw new Error("This email ID already has an account or is already in use. Please log in instead.");
   }
 
+  if (!data.password || typeof data.password !== "string" || data.password.trim().length === 0) {
+    throw new Error("Password is required and cannot be empty.");
+  }
+  if (data.password.length < 6) {
+    throw new Error("Password must be at least 6 characters long.");
+  }
+
+  const hashedPassword = await hashPassword(data.password);
+
   const resolvedName =
     data.name?.trim() ||
     cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -52,7 +62,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
   try {
     user = await User.create({
       email: cleanEmail,
-      password: data.password || "",
+      password: hashedPassword,
       name: resolvedName,
       userType: targetRole,
       language: "English",
@@ -63,6 +73,8 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
     }
     throw createErr;
   }
+
+  const sessionToken = generateSessionToken(user);
 
   try {
     if (targetRole === "teacher") {
@@ -82,7 +94,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
           language: user.language,
         },
         teacherProfile,
-        token: (user._id as any).toString(),
+        token: sessionToken,
       };
     }
 
@@ -104,7 +116,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
           language: user.language,
         },
         researcherProfile,
-        token: (user._id as any).toString(),
+        token: sessionToken,
       };
     }
 
@@ -122,7 +134,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
           userType: user.userType,
           language: user.language,
         },
-        token: (user._id as any).toString(),
+        token: sessionToken,
       };
     }
 
@@ -156,7 +168,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
         language: user.language,
       },
       studentProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   } catch (err) {
     await User.findByIdAndDelete(user._id);
@@ -170,21 +182,31 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     throw new Error("Email is required");
   }
 
+  if (!data.password || typeof data.password !== "string" || data.password.trim().length === 0) {
+    throw new Error("Password is required.");
+  }
+
   const user = await User.findOne({ email: cleanEmail });
   if (!user) {
     throw new Error("Invalid email or password");
   }
 
-  // Plain-text password check as specified in requirements
-  if (user.password && data.password && user.password !== data.password) {
+  if (!user.password) {
+    throw new Error("This account does not have password login enabled. Please use your institutional portal or SSO.");
+  }
+
+  const isPasswordValid = await verifyPassword(data.password, user.password);
+  if (!isPasswordValid) {
     throw new Error("Invalid email or password");
   }
 
-  // If user previously had no password, save provided password
-  if (!user.password && data.password) {
-    user.password = data.password;
+  // Safe lazy upgrade: if legacy plaintext, upgrade to bcrypt hash
+  if (isLegacyPlaintext(user.password)) {
+    user.password = await hashPassword(data.password);
     await user.save();
   }
+
+  const sessionToken = generateSessionToken(user);
 
   const resolvedName =
     user.name ||
@@ -211,7 +233,7 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
         language: user.language,
       },
       teacherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -237,7 +259,7 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
         language: user.language,
       },
       researcherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -255,13 +277,12 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
         userType: user.userType,
         language: user.language,
       },
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
   let studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
 
-  // If profile doesn't exist yet for this student user, create an initial one
   if (!studentProfile) {
     studentProfile = (await StudentProfile.create({
       userId: user._id,
@@ -293,7 +314,7 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
       language: user.language,
     },
     studentProfile,
-    token: (user._id as any).toString(),
+    token: sessionToken,
   };
 };
 
@@ -302,6 +323,8 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
   if (!user) {
     throw new Error("User not found");
   }
+
+  const sessionToken = generateSessionToken(user);
 
   if (user.userType === "teacher") {
     const teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
@@ -314,7 +337,7 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
         language: user.language,
       },
       teacherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -329,7 +352,7 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
         language: user.language,
       },
       researcherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -347,7 +370,7 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
         userType: user.userType,
         language: user.language,
       },
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -362,7 +385,7 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
       language: user.language,
     },
     studentProfile,
-    token: (user._id as any).toString(),
+    token: sessionToken,
   };
 };
 
@@ -392,6 +415,8 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
   user.userType = targetRole;
   await user.save();
 
+  const sessionToken = generateSessionToken(user);
+
   const resolvedName =
     user.name ||
     user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -415,7 +440,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
         language: user.language,
       },
       teacherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -439,7 +464,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
         language: user.language,
       },
       researcherProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -475,7 +500,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
         language: user.language,
       },
       studentProfile,
-      token: (user._id as any).toString(),
+      token: sessionToken,
     };
   }
 
@@ -488,7 +513,6 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
       userType: user.userType,
       language: user.language,
     },
-    token: (user._id as any).toString(),
+    token: sessionToken,
   };
 };
-
