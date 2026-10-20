@@ -59,7 +59,14 @@ export const createResearcherProfile = async (
 
   if (user) {
     userId = (user._id as any).toString();
-    if (user.userType !== "researcher") {
+    // Do not overwrite existing elevated, provider, or teacher roles
+    if (
+      user.userType !== "researcher" &&
+      user.userType !== "provider" &&
+      user.userType !== "teacher" &&
+      user.userType !== "institution" &&
+      user.userType !== "company"
+    ) {
       user.userType = "researcher";
       await user.save();
     }
@@ -154,32 +161,23 @@ export const getResearcherByEmail = async (
   email: string
 ): Promise<IResearcherProfile> => {
   const cleanEmail = email.toLowerCase().trim();
-  let user = await User.findOne({ email: cleanEmail });
-  if (!user) {
-    const resolvedName = cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    user = await User.create({
-      email: cleanEmail,
-      name: resolvedName,
-      userType: "researcher",
-      language: "English",
-    });
-  } else if (user.userType !== "researcher") {
-    user.userType = "researcher";
-    await user.save();
+  const user = await User.findOne({ email: cleanEmail });
+
+  let profile: IResearcherProfile | null = null;
+  if (user) {
+    profile = (await ResearcherProfile.findOne({ userId: user._id })
+      .populate("userId", "email name userType language")
+      .lean()) as any;
   }
 
-  let profile = await ResearcherProfile.findOne({ userId: user._id });
   if (!profile) {
-    profile = await ResearcherProfile.findOne({ "contact.email": cleanEmail });
+    profile = (await ResearcherProfile.findOne({ "contact.email": cleanEmail })
+      .populate("userId", "email name userType language")
+      .lean()) as any;
   }
+
   if (!profile) {
-    profile = await ResearcherProfile.create({
-      userId: user._id,
-      fullName: user.name || cleanEmail.split("@")[0],
-      contact: { email: user.email },
-      onboardingCompleted: false,
-      onboardingStep: 1,
-    });
+    throw new Error("Researcher profile not found");
   }
 
   return profile;
@@ -318,7 +316,13 @@ export const updateResearcherStep = async (
     }
 
     if (user) {
-      if (user.userType !== "researcher") {
+      if (
+        user.userType !== "researcher" &&
+        user.userType !== "provider" &&
+        user.userType !== "teacher" &&
+        user.userType !== "institution" &&
+        user.userType !== "company"
+      ) {
         user.userType = "researcher";
         await user.save();
       }
@@ -351,8 +355,15 @@ export const updateResearcherStep = async (
     );
   }
 
-  // Ensure linked User role is updated to researcher
-  if (user && user.userType !== "researcher") {
+  // Ensure linked User role is updated to researcher only if not already provider/teacher/institution/company
+  if (
+    user &&
+    user.userType !== "researcher" &&
+    user.userType !== "provider" &&
+    user.userType !== "teacher" &&
+    user.userType !== "institution" &&
+    user.userType !== "company"
+  ) {
     user.userType = "researcher";
     await user.save();
   }
@@ -613,7 +624,14 @@ export const completeResearcherOnboarding = async (
 
   if (profile.userId) {
     const user = await User.findById(profile.userId);
-    if (user && user.userType !== "researcher") {
+    if (
+      user &&
+      user.userType !== "researcher" &&
+      user.userType !== "provider" &&
+      user.userType !== "teacher" &&
+      user.userType !== "institution" &&
+      user.userType !== "company"
+    ) {
       user.userType = "researcher";
       await user.save();
     }

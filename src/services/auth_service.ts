@@ -3,6 +3,7 @@ import User, { IUser, UserRole } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
+import Course from "../models/Course";
 import { hashPassword, verifyPassword, isLegacyPlaintext } from "../utils/password";
 import { generateSessionToken } from "../utils/token";
 
@@ -237,6 +238,29 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     };
   }
 
+  // 2. Direct Provider Role or Existing Course Author Resolution
+  // If the account has userType === "provider" or has authored courses (and is not a teacher),
+  // strictly resolve as course provider without forcing into researcher onboarding.
+  const hasAuthoredCourses = await Course.exists({ provider: user._id });
+  if (user.userType === "provider" || hasAuthoredCourses) {
+    if (user.userType !== "provider") {
+      user.userType = "provider";
+      await user.save();
+    }
+
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: "provider",
+        language: user.language,
+      },
+      token: sessionToken,
+    };
+  }
+
+  // 3. Researcher Role
   if (user.userType === "researcher") {
     let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
 
@@ -263,8 +287,8 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     };
   }
 
+  // 4. Other Specialized Roles
   if (
-    user.userType === "provider" ||
     user.userType === "learner" ||
     user.userType === "company" ||
     user.userType === "institution"
@@ -341,6 +365,25 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
     };
   }
 
+  const hasAuthoredCourses = await Course.exists({ provider: user._id });
+  if (user.userType === "provider" || hasAuthoredCourses) {
+    if (user.userType !== "provider") {
+      user.userType = "provider";
+      await user.save();
+    }
+
+    return {
+      user: {
+        _id: (user._id as any).toString(),
+        email: user.email,
+        name: user.name,
+        userType: "provider",
+        language: user.language,
+      },
+      token: sessionToken,
+    };
+  }
+
   if (user.userType === "researcher") {
     const researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
     return {
@@ -357,7 +400,6 @@ export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
   }
 
   if (
-    user.userType === "provider" ||
     user.userType === "learner" ||
     user.userType === "company" ||
     user.userType === "institution"
