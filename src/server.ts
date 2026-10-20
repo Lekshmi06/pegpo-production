@@ -41,13 +41,31 @@ const corsOptions = {
       ? process.env.ALLOWED_CORS_ORIGINS.split(/[,\s]+/).filter(Boolean)
       : null;
     if (!allowed || allowed.includes(origin) || allowed.includes("*")) {
-      callback(null, true);
-    } else {
-      callback(new Error(`Origin ${origin} not allowed by CORS`));
+      return callback(null, true);
     }
+    const isWildcardMatch = allowed.some((item) => {
+      if (item.startsWith("*.")) {
+        const suffix = item.slice(1);
+        try {
+          const url = new URL(origin);
+          return url.hostname.endsWith(suffix) || url.hostname === item.slice(2);
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
+    if (isWildcardMatch) {
+      return callback(null, true);
+    }
+    callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
 };
+
+app.use(cors(corsOptions));
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
