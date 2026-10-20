@@ -5,7 +5,7 @@ import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
 import Course from "../models/Course";
 import { hashPassword, verifyPassword, isLegacyPlaintext } from "../utils/password";
-import { generateSessionToken } from "../utils/token";
+import { generateSessionToken, verifySessionToken } from "../utils/token";
 
 export interface RegisterInput {
   email: string;
@@ -342,8 +342,18 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
   };
 };
 
-export const getCurrentUser = async (userId: string): Promise<AuthResult> => {
-  const user = await User.findById(userId);
+export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => {
+  let resolvedId = tokenOrId;
+  const decoded = verifySessionToken(tokenOrId);
+  if (decoded?.userId) {
+    resolvedId = decoded.userId;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(resolvedId)) {
+    throw new Error("Invalid session token or user ID");
+  }
+
+  const user = await User.findById(resolvedId);
   if (!user) {
     throw new Error("User not found");
   }
@@ -444,8 +454,16 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
   }
 
   let user = null;
-  if (input.userId && mongoose.Types.ObjectId.isValid(input.userId)) {
-    user = await User.findById(input.userId);
+  let resolvedUserId = input.userId;
+  if (resolvedUserId) {
+    const decoded = verifySessionToken(resolvedUserId);
+    if (decoded?.userId) {
+      resolvedUserId = decoded.userId;
+    }
+  }
+
+  if (resolvedUserId && mongoose.Types.ObjectId.isValid(resolvedUserId)) {
+    user = await User.findById(resolvedUserId);
   } else if (input.email) {
     user = await User.findOne({ email: input.email.trim().toLowerCase() });
   }

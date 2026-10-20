@@ -10,9 +10,6 @@ export async function hashPassword(password: string): Promise<string> {
   if (!password || typeof password !== "string" || password.trim().length === 0) {
     throw new Error("Password cannot be empty.");
   }
-  if (password.length < 6) {
-    throw new Error("Password must be at least 6 characters long.");
-  }
   return bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
 }
 
