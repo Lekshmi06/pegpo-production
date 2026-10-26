@@ -4,6 +4,9 @@ import {
   loginUser,
   getCurrentUser,
   updateUserRole,
+  authenticateWithGoogle,
+  authenticateMockGoogle,
+  PREDEFINED_MOCK_GOOGLE_ACCOUNTS,
 } from "../services/auth_service";
 
 export const registerController = async (
@@ -142,5 +145,113 @@ export const selectRoleController = async (
       message,
     });
   }
+};
+
+export const googleAuthController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { credential, idToken, userType } = req.body;
+    const token = credential || idToken;
+
+    if (!token) {
+      res.status(400).json({
+        success: false,
+        message: "Google credential (ID token) is required",
+      });
+      return;
+    }
+
+    const result = await authenticateWithGoogle({ credential: token, userType });
+    res.status(200).json({
+      success: true,
+      message: result.isNewUser
+        ? "Account created successfully with Google"
+        : "Signed in successfully with Google",
+      data: result,
+    });
+  } catch (error: any) {
+    const message =
+      error instanceof Error ? error.message : "Google authentication failed";
+
+    const statusCode =
+      message.includes("not verified") ||
+      message.includes("Invalid") ||
+      message.includes("expired") ||
+      message.includes("audience mismatch") ||
+      message.includes("issuer")
+        ? 401
+        : 400;
+
+    res.status(statusCode).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const mockGoogleAuthController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  // Production safeguard: Strictly forbidden in production, requires ENABLE_MOCK_GOOGLE_AUTH="true"
+  const isProduction = process.env.NODE_ENV === "production";
+  const isMockEnabled = process.env.ENABLE_MOCK_GOOGLE_AUTH === "true";
+
+  if (isProduction || !isMockEnabled) {
+    res.status(403).json({
+      success: false,
+      message: "Mock Google authentication is disabled in this environment.",
+    });
+    return;
+  }
+
+  try {
+    const { accountId, email, name, userType, isNewUserTest } = req.body;
+    const result = await authenticateMockGoogle({
+      accountId,
+      email,
+      name,
+      userType,
+      isNewUserTest,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: result.isNewUser
+        ? "Simulated account created successfully"
+        : "Simulated sign-in successful",
+      data: result,
+    });
+  } catch (error: any) {
+    const message =
+      error instanceof Error ? error.message : "Mock Google authentication failed";
+    res.status(400).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const getMockAccountsController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  const isProduction = process.env.NODE_ENV === "production";
+  const isMockEnabled = process.env.ENABLE_MOCK_GOOGLE_AUTH === "true";
+
+  if (isProduction || !isMockEnabled) {
+    res.status(403).json({
+      success: false,
+      message: "Mock Google authentication is disabled in this environment.",
+    });
+    return;
+  }
+
+  res.status(200).json({
+    success: true,
+    data: PREDEFINED_MOCK_GOOGLE_ACCOUNTS,
+  });
 };
 
