@@ -225,7 +225,11 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
       const targetGroupIds = [
         ...(t.targetClassSectionIds || []),
         ...(t.schedule?.targetGroups || []),
-      ].map((g: any) => (g?._id ? g._id.toString() : g.toString()));
+        ...(t.teachingContextId ? [t.teachingContextId] : []),
+        ...(t.schedule?.teachingContextId ? [t.schedule.teachingContextId] : []),
+      ]
+        .filter(Boolean)
+        .map((g: any) => (g?._id ? g._id.toString() : g.toString()));
 
       if (targetGroupIds.length > 0) {
         // Must belong to one of targeted groups (supports matching either ClassSection or linked TeachingContext ID)
@@ -484,6 +488,9 @@ export const startTestAttempt = async (
     attemptMode ||
     (test.usages?.practice && !test.usages?.scheduledTest ? "practice" : "scheduled_test");
 
+  const studentSectionIds = await getStudentClassSectionIds(studentProfileId);
+  let matchedSectionId: mongoose.Types.ObjectId | undefined;
+
   // Server-side scheduled test validation
   if (resolvedAttemptMode === "scheduled_test") {
     if (!test.usages?.scheduledTest) {
@@ -501,18 +508,47 @@ export const startTestAttempt = async (
       throw new Error("You have already completed and submitted this scheduled exam. Multiple attempts are not permitted.");
     }
 
-    // 1. Group membership eligibility
-    const studentSectionIds = await getStudentClassSectionIds(studentProfileId);
+    // 1. Group membership eligibility (supports matching either enrolled ClassSection or linked TeachingContext ID)
     const targetGroups = [
       ...(test.targetClassSectionIds || []),
       ...(test.schedule?.targetGroups || []),
-    ].map((id) => id.toString());
+      ...(test.teachingContextId ? [test.teachingContextId] : []),
+      ...(test.schedule?.teachingContextId ? [test.schedule.teachingContextId] : []),
+    ]
+      .filter(Boolean)
+      .map((id: any) => (id?._id ? id._id.toString() : id.toString()));
 
     if (targetGroups.length > 0) {
-      const isEligible = studentSectionIds.some((sId) => targetGroups.includes(sId.toString()));
+      const linkedTeachingContexts =
+        studentSectionIds.length > 0
+          ? await TeachingContext.find({
+              classSectionId: { $in: studentSectionIds },
+              isArchived: false,
+            })
+              .select("_id classSectionId")
+              .lean()
+          : [];
+
+      const eligibleTargetIds = new Set([
+        ...studentSectionIds.map((id) => id.toString()),
+        ...linkedTeachingContexts.map((tc) => tc._id.toString()),
+      ]);
+
+      const isEligible = targetGroups.some((tId) => eligibleTargetIds.has(tId));
       if (!isEligible) {
         throw new Error("You are not eligible to take this exam as you are not enrolled in the targeted class or section.");
       }
+
+      // Determine the specific class section targeted
+      const matchedDirectSection = studentSectionIds.find((sId) =>
+        targetGroups.includes(sId.toString())
+      );
+      const matchedTc = linkedTeachingContexts.find((tc) =>
+        targetGroups.includes(tc._id.toString())
+      );
+      matchedSectionId =
+        matchedDirectSection ||
+        (matchedTc?.classSectionId as mongoose.Types.ObjectId | undefined);
     }
 
     // 2. Scheduled exam window check
@@ -525,8 +561,8 @@ export const startTestAttempt = async (
     }
   }
 
-  const studentSectionIds = await getStudentClassSectionIds(studentProfileId);
-  const primarySectionId = studentSectionIds.length > 0 ? studentSectionIds[0] : undefined;
+  const primarySectionId =
+    matchedSectionId || (studentSectionIds.length > 0 ? studentSectionIds[0] : undefined);
 
   if (!attempt) {
     attempt = await TestAttempt.create({

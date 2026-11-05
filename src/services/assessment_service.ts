@@ -106,6 +106,9 @@ export async function parseUploadedQuestionPaper(
   const fallbackBoard = metadata.board || "CBSE";
   const fallbackClass = metadata.classLevel || "Class 10";
 
+  const ai = getAiClient();
+  const DEFAULT_MODEL = CANDIDATE_MODELS[0];
+
   if (!ai) {
     throw new Error("Gemini AI API key is not configured");
   }
@@ -246,6 +249,8 @@ Return ONLY valid JSON matching this exact structure:
     originalDocument,
   };
 }
+
+export const uploadAndExtractAssessment = parseUploadedQuestionPaper;
 
 /**
  * AI Assistant: Suggests answers for unkeyed or draft questions.

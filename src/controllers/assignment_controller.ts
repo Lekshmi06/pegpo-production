@@ -88,7 +88,7 @@ function parseStringArray(input: any): string[] {
  * Standardized controller error handler mapping domain errors to HTTP status codes.
  * Prevents leaking internal stack traces or database internals.
  */
-function handleControllerError(
+export function handleControllerError(
   res: Response,
   error: unknown,
   defaultMessage = "An unexpected error occurred."
@@ -108,6 +108,15 @@ function handleControllerError(
     message.includes("permission")
   ) {
     res.status(403).json({ success: false, message });
+    return;
+  }
+
+  // 409 Conflict (e.g. resubmission of an already evaluated & graded submission)
+  if (
+    message.includes("Resubmissions are not permitted") ||
+    message.includes("already been evaluated and graded")
+  ) {
+    res.status(409).json({ success: false, message });
     return;
   }
 
