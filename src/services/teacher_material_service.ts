@@ -8,6 +8,7 @@ import TeacherMaterial, {
 } from "../models/TeacherMaterial";
 import { ITeacherProfile } from "../models/TeacherProfile";
 import { IStudentProfile } from "../models/StudentProfile";
+import { getStudentClassSectionIds } from "./class_section_service";
 import Source from "../models/source_model";
 import SourceContent from "../models/source_content_model";
 import { extractDocumentText } from "./document_extraction_service";
@@ -189,7 +190,10 @@ export class TeacherMaterialService {
     }
 
     await material.save();
-    return material;
+    return TeacherMaterial.findById(material._id).populate(
+      "classSectionId",
+      "name classLevel section board"
+    );
   }
 
   /**
@@ -222,7 +226,10 @@ export class TeacherMaterialService {
     }
 
     await material.save();
-    return material;
+    return TeacherMaterial.findById(material._id).populate(
+      "classSectionId",
+      "name classLevel section board"
+    );
   }
 
   /**
@@ -260,10 +267,19 @@ export class TeacherMaterialService {
     // If student belongs to a class section or level, match accordingly:
     const classConditions: any[] = [{ targetAudience: "all" }];
 
-    if (studentProfile?.classSectionId) {
+    let studentClassSectionIds: mongoose.Types.ObjectId[] = [];
+    if (studentProfile?._id) {
+      studentClassSectionIds = await getStudentClassSectionIds(studentProfile._id);
+    }
+
+    if (studentProfile?.classSectionId && !studentClassSectionIds.some((id) => id.equals(studentProfile.classSectionId as any))) {
+      studentClassSectionIds.push(new mongoose.Types.ObjectId(studentProfile.classSectionId.toString()));
+    }
+
+    if (studentClassSectionIds.length > 0) {
       classConditions.push({
         targetAudience: "class_section",
-        classSectionId: studentProfile.classSectionId,
+        classSectionId: { $in: studentClassSectionIds },
       });
     }
 

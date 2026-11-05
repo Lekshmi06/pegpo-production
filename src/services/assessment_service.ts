@@ -5,11 +5,25 @@ import Test, { ITest, IAssessmentUsages, IAssessmentSchedule, IOriginalDocumentR
 import Question, { IQuestion, QuestionType } from "../models/Question";
 import TestAttempt from "../models/TestAttempt";
 import TeachingContext from "../models/TeachingContext";
+import { findOrCreateClassSection } from "./class_section_service";
 import { extractDocumentText } from "./document_extraction_service";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.5-flash";
+function getAiClient(): GoogleGenAI | null {
+  const apiKey =
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    "";
+  return apiKey ? new GoogleGenAI({ apiKey }) : null;
+}
+
+const CANDIDATE_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemini-2.5-flash",
+];
 
 function cleanJsonString(raw: string): string {
   let cleaned = raw.trim();
@@ -241,6 +255,7 @@ export async function suggestAnswersForQuestions(
   questions: ExtractedQuestionItem[],
   context?: { subject?: string; board?: string; classLevel?: string }
 ): Promise<Array<{ index: number; suggestedAnswer: string; explanation: string }>> {
+  const ai = getAiClient();
   if (!ai || !Array.isArray(questions) || questions.length === 0) {
     return [];
   }
@@ -269,18 +284,23 @@ Return ONLY valid JSON matching this structure:
   }
 ]`;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
-      contents: prompt,
-    });
-    const cleaned = cleanJsonString(response.text || "");
-    const parsed = JSON.parse(cleaned);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.warn("Gemini suggest answers failed:", err);
-    return [];
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+      });
+      const cleaned = cleanJsonString(response.text || "");
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    } catch (err) {
+      console.warn(`Gemini suggest answers failed with model ${model}, trying next...`);
+    }
   }
+
+  return [];
 }
 
 /**
@@ -305,8 +325,9 @@ export async function generateTeacherAiAssessment(params: {
   totalMarks: number;
   questions: ExtractedQuestionItem[];
 }> {
+  const ai = getAiClient();
   if (!ai) {
-    throw new Error("Gemini AI API key is not configured");
+    throw new Error("Gemini AI API key is not configured. Please ensure GEMINI_API_KEY is configured in your environment.");
   }
 
   const count = Math.min(50, Math.max(1, Number(params.questionCount) || 10));
@@ -353,18 +374,28 @@ Return ONLY a valid JSON object matching this structure:
   ]
 }`;
 
-  const response = await ai.models.generateContent({
-    model: DEFAULT_MODEL,
-    contents: prompt,
-  });
-
-  const cleaned = cleanJsonString(response.text || "");
   let parsed: any = null;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch (err) {
-    console.warn("Gemini generate assessment JSON parse error:", err);
-    throw new Error("Failed to parse AI generated questions. Please try again.");
+  let lastError: any = null;
+
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+      });
+      const cleaned = cleanJsonString(response.text || "");
+      parsed = JSON.parse(cleaned);
+      if (parsed && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+        break;
+      }
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Gemini generation model ${model} failed, trying candidate fallback:`, err?.message || err);
+    }
+  }
+
+  if (!parsed || !Array.isArray(parsed.questions)) {
+    throw new Error(lastError?.message || "Failed to generate assessment questions with Gemini AI. Please try again.");
   }
 
   const rawQuestions = Array.isArray(parsed?.questions) ? parsed.questions : [];
@@ -519,8 +550,28 @@ export async function saveAssessment(payload: {
     for (const item of rawTargetGroups) {
       if (item && mongoose.Types.ObjectId.isValid(item.toString())) {
         const idObj = new mongoose.Types.ObjectId(item.toString());
-        if (!resolvedTargetGroupIds.some((existing) => existing.equals(idObj))) {
-          resolvedTargetGroupIds.push(idObj);
+        let targetSectionId = idObj;
+
+        // Resolve whether this ID references a TeachingContext or ClassSection directly
+        const matchingCtx = await TeachingContext.findById(idObj);
+        if (matchingCtx?.classSectionId) {
+          targetSectionId = matchingCtx.classSectionId as mongoose.Types.ObjectId;
+        } else if (matchingCtx && !matchingCtx.classSectionId) {
+          const cs = await findOrCreateClassSection({
+            classLevel: matchingCtx.classLevel,
+            section: matchingCtx.section || "A",
+            board: matchingCtx.curriculumBoard || "CBSE",
+            academicYear: matchingCtx.academicYear || "2026-2027",
+            type: matchingCtx.contextType === "tuition" ? "tuition" : "institution",
+            organizationId: matchingCtx.organizationId,
+          });
+          matchingCtx.classSectionId = cs._id as mongoose.Types.ObjectId;
+          await matchingCtx.save();
+          targetSectionId = cs._id as mongoose.Types.ObjectId;
+        }
+
+        if (!resolvedTargetGroupIds.some((existing) => existing.equals(targetSectionId))) {
+          resolvedTargetGroupIds.push(targetSectionId);
         }
       }
     }
@@ -530,6 +581,18 @@ export async function saveAssessment(payload: {
     const ctx = await TeachingContext.findById(resolvedTeachingContextId);
     if (ctx?.classSectionId) {
       resolvedTargetGroupIds.push(ctx.classSectionId as mongoose.Types.ObjectId);
+    } else if (ctx) {
+      const cs = await findOrCreateClassSection({
+        classLevel: ctx.classLevel,
+        section: ctx.section || "A",
+        board: ctx.curriculumBoard || "CBSE",
+        academicYear: ctx.academicYear || "2026-2027",
+        type: ctx.contextType === "tuition" ? "tuition" : "institution",
+        organizationId: ctx.organizationId,
+      });
+      ctx.classSectionId = cs._id as mongoose.Types.ObjectId;
+      await ctx.save();
+      resolvedTargetGroupIds.push(cs._id as mongoose.Types.ObjectId);
     }
   }
 

@@ -3,6 +3,7 @@ import Test, { ITest, IAssessmentSchedule } from "../models/Test";
 import Question, { IQuestion } from "../models/Question";
 import TestAttempt, { ITestAttempt, QuestionAttemptStatus } from "../models/TestAttempt";
 import StudentProfile from "../models/StudentProfile";
+import TeachingContext from "../models/TeachingContext";
 import { getStudentClassSectionIds } from "./class_section_service";
 
 export interface TestFilterOptions {
@@ -170,6 +171,22 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
     studentClassSectionIds = await getStudentClassSectionIds(filters.studentProfileId);
   }
 
+  // Retrieve any TeachingContext IDs referencing the student's class sections for robust targeting resolution
+  const linkedTeachingContexts =
+    studentClassSectionIds.length > 0
+      ? await TeachingContext.find({
+          classSectionId: { $in: studentClassSectionIds },
+          isArchived: false,
+        })
+          .select("_id")
+          .lean()
+      : [];
+
+  const studentTargetIdStrs = new Set([
+    ...studentClassSectionIds.map((id) => id.toString()),
+    ...linkedTeachingContexts.map((tc) => tc._id.toString()),
+  ]);
+
   const resolvedBoard =
     filters.board ||
     studentProfile?.education?.board ||
@@ -188,8 +205,6 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
     .populate("schedule.targetGroups", "name classLevel section board")
     .sort({ isLocked: 1, createdAt: -1 })
     .lean();
-
-  const studentSectionIdStrs = new Set(studentClassSectionIds.map((id) => id.toString()));
 
   const filteredTests = rawTests.filter((t) => {
     // 1. If created by this student, always include
@@ -213,8 +228,8 @@ export const listTests = async (filters: TestFilterOptions = {}) => {
       ].map((g: any) => (g?._id ? g._id.toString() : g.toString()));
 
       if (targetGroupIds.length > 0) {
-        // Must belong to one of targeted groups
-        const isMember = targetGroupIds.some((gId) => studentSectionIdStrs.has(gId));
+        // Must belong to one of targeted groups (supports matching either ClassSection or linked TeachingContext ID)
+        const isMember = targetGroupIds.some((gId) => studentTargetIdStrs.has(gId));
         if (!isMember) {
           return false;
         }

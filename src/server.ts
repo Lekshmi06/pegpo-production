@@ -30,6 +30,7 @@ import courseRoutes from "./routes/course_routes";
 import learnerCourseRoutes from "./routes/learner_course_routes";
 import institutionRoutes from "./routes/institution_routes";
 import ssoRoutes from "./routes/sso_routes";
+import assignmentRoutes from "./routes/assignment_routes";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -130,6 +131,7 @@ app.use("/api/tests", testRoutes);
 app.use("/api/assessments", assessmentRoutes);
 app.use("/api/teacher/materials", teacherMaterialRoutes);
 app.use("/api/materials", teacherMaterialRoutes);
+app.use("/api/assignments", assignmentRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/workspace", workspaceRoutes);
 app.use("/api/competitive", competitiveRoutes);

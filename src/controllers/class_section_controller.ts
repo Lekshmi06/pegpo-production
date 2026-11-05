@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Request, Response } from "express";
 import {
   createClassSection,
@@ -9,13 +10,17 @@ import {
   getTeacherClassesWithStudentCount,
   inviteStudentToClass,
 } from "../services/class_section_service";
+import TeachingContext from "../models/TeachingContext";
+import TeacherProfile from "../models/TeacherProfile";
+import User from "../models/User";
+import { verifySessionToken } from "../utils/token";
 
 export const createClassSectionController = async (
   req: Request,
   res: Response
 ): Promise<void> => {
   try {
-    const { classLevel, section, board, academicYear, type, name, organizationId } = req.body;
+    const { classLevel, section, board, academicYear, type, name, organizationId, subject } = req.body;
     if (!classLevel) {
       res.status(400).json({ success: false, message: "classLevel is required" });
       return;
@@ -30,6 +35,51 @@ export const createClassSectionController = async (
       name,
       organizationId,
     });
+
+    // Resolve authenticated teacher profile if available
+    let teacherProfile = req.teacherProfile;
+    if (teacherProfile && (!req.user || req.user.userType !== "teacher")) {
+      teacherProfile = undefined;
+    }
+    if (!teacherProfile) {
+      const authHeader = req.headers.authorization;
+      const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : undefined;
+      // Strictly require a signed JWT bearer token (must have 3 dot-separated parts)
+      if (bearerToken && bearerToken.split(".").length === 3) {
+        const payload = verifySessionToken(bearerToken);
+        if (payload?.userId && mongoose.Types.ObjectId.isValid(payload.userId)) {
+          const user = await User.findById(payload.userId);
+          // Strictly verify that the user exists and has a teacher role before resolving TeacherProfile
+          if (user && user.userType === "teacher" && !user.isSuspended && user.status !== "suspended") {
+            teacherProfile = (await TeacherProfile.findOne({ userId: user._id })) || undefined;
+          }
+        }
+      }
+    }
+
+    // Automatically establish canonical TeachingContext for the teacher
+    if (teacherProfile && group) {
+      const resolvedSubject = (subject as string)?.trim() || "General";
+      await TeachingContext.findOneAndUpdate(
+        {
+          teacherId: teacherProfile._id,
+          classSectionId: group._id,
+        },
+        {
+          teacherId: teacherProfile._id,
+          classSectionId: group._id,
+          organizationId: group.organizationId,
+          contextType: group.type === "tuition" ? "tuition" : "institution",
+          classLevel: group.classLevel,
+          section: group.section,
+          subject: resolvedSubject,
+          curriculumBoard: group.board,
+          academicYear: group.academicYear,
+          isArchived: false,
+        },
+        { upsert: true, new: true }
+      );
+    }
 
     res.status(201).json({
       success: true,
