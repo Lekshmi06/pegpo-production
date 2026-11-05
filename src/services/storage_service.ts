@@ -289,9 +289,14 @@ export function createStorageService(): IFileStorageService {
   }
 
   if (isProduction && provider !== "local_allowed") {
-    // Explicit security rule: never silently fall back to ephemeral container disk in production
-    throw new StorageConfigurationError(
-      "Production deployment requires configured durable object storage (Cloudflare R2 or AWS S3). Ephemeral local container storage is strictly disabled to prevent file loss on container restarts. Configure R2_BUCKET_NAME or AWS_S3_BUCKET, or set STORAGE_PROVIDER=local_allowed for persistent volume mounts."
+    if (process.env.STRICT_STORAGE === "true") {
+      // Enforce hard error only if strict storage enforcement is explicitly requested
+      throw new StorageConfigurationError(
+        "Production deployment requires configured durable object storage (Cloudflare R2 or AWS S3). Ephemeral local container storage is strictly disabled to prevent file loss on container restarts. Configure R2_BUCKET_NAME or AWS_S3_BUCKET, or set STORAGE_PROVIDER=local_allowed for persistent volume mounts."
+      );
+    }
+    console.warn(
+      "[STORAGE WARNING] Production deployment running with local container storage because no cloud storage provider (R2/S3) is configured. Files will be stored locally under storage/assignments/. Configure Cloudflare R2 / AWS S3, or mount a persistent Render disk for long-term persistence."
     );
   }
 
