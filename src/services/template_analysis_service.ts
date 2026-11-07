@@ -8,14 +8,17 @@ import LessonPlanTemplate, {
   SectionContentType,
 } from "../models/LessonPlanTemplate";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
 const CANDIDATE_MODELS = [
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
   "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 export interface TemplateAnalysisResult {
@@ -147,10 +150,11 @@ Return STRICT valid JSON only without markdown formatting.`;
 
   let parsed: any = null;
 
-  if (ai) {
+  const client = getGeminiClient();
+  if (client) {
     for (const model of CANDIDATE_MODELS) {
       try {
-        const response = await ai.models.generateContent({
+        const response = await client.models.generateContent({
           model,
           contents: [
             {

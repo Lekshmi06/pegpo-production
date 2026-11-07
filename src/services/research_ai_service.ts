@@ -6,9 +6,11 @@ import ResearcherProfile from "../models/ResearcherProfile";
 import ResearchNote from "../models/ResearchNote";
 
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.5-flash";
+import {
+  getGeminiClient,
+  getGeminiModel,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
 export type ResearchAIContextType =
   | "researcher"
@@ -211,13 +213,14 @@ STRICT GROUNDING & ACADEMIC INTEGRITY INSTRUCTIONS:
    - Do NOT wrap your entire answer in conversational pleasantries like "Sure, here is your draft:". Begin directly with the academic text or analysis.
    - At the bottom, include a short "### Evidence Grounding" note summarizing the verified sources used.`;
 
-    if (!ai) {
+    const client = getGeminiClient();
+    if (!client) {
       return generateOfflineManuscriptFallback(action, titleForSection, currentDraftText, relevantPapers, relevantNotes, projectContext);
     }
 
     try {
-      const response = await ai.models.generateContent({
-        model: DEFAULT_MODEL,
+      const response = await client.models.generateContent({
+        model: getGeminiModel(),
         contents: prompt,
       });
 
@@ -454,14 +457,15 @@ STRICT ACADEMIC REASONING & GROUNDING RULES:
       return actions;
     };
 
-    if (!ai) {
+    const client = getGeminiClient();
+    if (!client) {
       // Offline fallback when GEMINI_API_KEY is not configured
       return generateOfflineFallbackReply(query, relevantPapers, selectedText, contextScope, loadedProject);
     }
 
     try {
-      const response = await ai.models.generateContent({
-        model: DEFAULT_MODEL,
+      const response = await client.models.generateContent({
+        model: getGeminiModel(),
         contents: prompt,
       });
 

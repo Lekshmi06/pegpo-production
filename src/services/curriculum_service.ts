@@ -9,15 +9,17 @@ import Curriculum, {
 } from "../models/Curriculum";
 import TeachingContext from "../models/TeachingContext";
 import { extractDocumentText } from "./document_extraction_service";
-import { GoogleGenAI } from "@google/genai";
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 const CANDIDATE_MODELS = [
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
   "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 export interface CreateCurriculumInput {
@@ -356,10 +358,11 @@ ${textSlice}`;
 
     let parsedResult: any = null;
 
-    if (ai) {
+    const client = getGeminiClient();
+    if (client) {
       for (const model of CANDIDATE_MODELS) {
         try {
-          const response = await ai.models.generateContent({
+          const response = await client.models.generateContent({
             model,
             contents: prompt,
           });

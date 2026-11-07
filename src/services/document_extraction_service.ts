@@ -2,11 +2,12 @@ import fs from "fs/promises";
 import path from "path";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
-import { GoogleGenAI } from "@google/genai";
-
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.5-flash";
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
 interface ExtractedDocument {
   text: string;
@@ -55,8 +56,9 @@ const extractAudioText = async (
   filePath: string,
   mimeType: string
 ): Promise<ExtractedDocument> => {
-  if (!ai) {
-    throw new Error("Gemini AI API key not configured for audio transcription");
+  const client = getGeminiClient();
+  if (!client) {
+    throw new Error("Gemini AI API key is not configured for audio transcription. Please configure GEMINI_API_KEY.");
   }
 
   const audioBuffer = await fs.readFile(filePath);
@@ -71,42 +73,57 @@ const extractAudioText = async (
   else if (ext === ".m4a") resolvedMime = "audio/x-m4a";
   else if (!resolvedMime || resolvedMime === "application/octet-stream") resolvedMime = "audio/webm";
 
-  try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              inlineData: {
-                mimeType: resolvedMime,
-                data: base64Audio,
+  const primaryModel = getGeminiModel();
+  const modelsToTry = [primaryModel, ...GEMINI_FALLBACK_MODELS.filter((m) => m !== primaryModel)];
+
+  let lastClassified: any = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await client.models.generateContent({
+        model,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: resolvedMime,
+                  data: base64Audio,
+                },
               },
-            },
-            {
-              text: "You are an expert classroom lecture transcriber. Accurately transcribe all spoken words in this audio recording. Format the transcript with clean timestamps where appropriate (e.g. [00:00 - 00:15] Teacher: ...). Return only the transcription text.",
-            },
-          ],
-        },
-      ],
-    });
+              {
+                text: "You are an expert classroom lecture transcriber. Accurately transcribe all spoken words in this audio recording. Format the transcript with clean timestamps where appropriate (e.g. [00:00 - 00:15] Teacher: ...). Return only the transcription text.",
+              },
+            ],
+          },
+        ],
+      });
 
-    const text = (response.text || "").trim();
-    if (!text) {
-      return {
-        text: "[00:00 - 00:20] Classroom lecture recording captured. Clear speech detected.",
-      };
+      const text = (response.text || "").trim();
+      if (text.length > 0) {
+        return { text };
+      }
+    } catch (error: any) {
+      const classified = classifyGeminiError(error);
+      lastClassified = classified;
+
+      if (classified.kind === "AUTH_ERROR") {
+        throw new Error(`Audio transcription failed (${classified.kind}): ${classified.safeMessage}`);
+      }
+
+      console.warn(`[extractAudioText] Model ${model} failed (${classified.kind}):`, classified.safeMessage);
+
+      if (classified.kind === "QUOTA_EXHAUSTED") {
+        await new Promise((r) => setTimeout(r, 1000));
+      } else if (classified.kind === "MODEL_UNAVAILABLE") {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
-
-    return { text };
-  } catch (error: any) {
-    console.warn("Gemini audio transcription error:", error);
-    // If rate limited or quota exceeded, provide descriptive lecture context so downstream AI doesn't break
-    return {
-      text: "[00:00 - 00:25] Recorded Classroom Lecture Session. Topics covered: core principles, definitions, and exam review.",
-    };
   }
+
+  const finalMessage = lastClassified?.safeMessage || "Audio transcription could not be completed at this time.";
+  throw new Error(`Audio transcription failed (${lastClassified?.kind || "UNKNOWN"}): ${finalMessage}`);
 };
 
 const extractPdfText = async (

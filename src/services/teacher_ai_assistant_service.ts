@@ -1,14 +1,15 @@
-import { GoogleGenAI } from "@google/genai";
 import { ITeacherProfile } from "../models/TeacherProfile";
-
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
 const CANDIDATE_MODELS = [
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
   "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 export interface TeacherPageContext {
@@ -42,15 +43,16 @@ export interface TeacherAIChatResult {
  * Executes a Gemini prompt through candidate models sequentially.
  */
 async function callGemini(prompt: string): Promise<{ text: string; isQuotaExhausted: boolean }> {
-  if (!ai) {
-    return { text: "", isQuotaExhausted: true };
+  const client = getGeminiClient();
+  if (!client) {
+    return { text: "", isQuotaExhausted: false };
   }
 
   let quotaExhausted = false;
 
   for (const model of CANDIDATE_MODELS) {
     try {
-      const response = await ai.models.generateContent({
+      const response = await client.models.generateContent({
         model,
         contents: prompt,
       });

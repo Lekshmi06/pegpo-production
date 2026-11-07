@@ -317,6 +317,7 @@ export const createMockTestFromQuestions = async (params: CreateMockTestParams) 
     cutOffScore: exam.markingScheme.cutOffScore,
     studentProfileId: new mongoose.Types.ObjectId(studentProfileId),
     createdBy: new mongoose.Types.ObjectId(userId),
+    usages: { practice: true, scheduledTest: false },
     questions: selectedQuestionIds,
   });
 

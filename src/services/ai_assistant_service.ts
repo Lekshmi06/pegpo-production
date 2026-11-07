@@ -1,20 +1,16 @@
 import mongoose from "mongoose";
-import { GoogleGenAI } from "@google/genai";
 import Test, { ITest } from "../models/Test";
 import Question, { IQuestion } from "../models/Question";
 import { IUser } from "../models/User";
 import { IStudentProfile } from "../models/StudentProfile";
 import { TEST_CONFIG, resolveQuestionCount } from "../config/test_config";
-
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.5-flash";
-const CANDIDATE_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
-  "gemini-3.6-flash",
-];
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+  callGeminiWithFallback,
+} from "../config/gemini_config";
 
 export interface GeminiGenerateResult {
   text: string;
@@ -23,58 +19,35 @@ export interface GeminiGenerateResult {
 }
 
 /**
- * Robust caller that tries multiple candidate Gemini models sequentially upon rate limits or errors.
+ * Centralized caller that delegates to callGeminiWithFallback across verified models.
  */
 async function callGeminiGenerate(prompt: string): Promise<GeminiGenerateResult> {
-  if (!ai) {
+  const client = getGeminiClient();
+  if (!client) {
     return {
       text: "",
-      isQuotaExhausted: true,
-      quotaMessage: "Gemini AI API key is not configured or missing.",
+      isQuotaExhausted: false,
+      quotaMessage: "Gemini AI API key is not configured or missing from the backend environment.",
     };
   }
 
-  let lastError: any = null;
-  let quotaExhaustedEncountered = false;
-
-  for (const model of CANDIDATE_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-      });
-      const text = response.text || "";
-      if (text.trim().length > 0) {
-        return { text: text.trim(), isQuotaExhausted: false };
-      }
-    } catch (err: any) {
-      lastError = err;
-      const errStr = String(err?.message || "") + " " + String(err?.status || "");
-      const isQuota =
-        err?.status === 429 ||
-        errStr.includes("429") ||
-        errStr.includes("Quota exceeded") ||
-        errStr.includes("RESOURCE_EXHAUSTED") ||
-        errStr.includes("rate limit");
-      if (isQuota) {
-        quotaExhaustedEncountered = true;
-      }
-      console.warn(`[callGeminiGenerate] Model ${model} failed (${err?.status || err?.message?.slice(0, 100)}), trying next candidate...`);
-      continue;
-    }
+  try {
+    const res = await callGeminiWithFallback(prompt);
+    return {
+      text: res.text,
+      isQuotaExhausted: false,
+    };
+  } catch (err: any) {
+    const classified = classifyGeminiError(err);
+    const isQuota = classified.kind === "QUOTA_EXHAUSTED";
+    return {
+      text: "",
+      isQuotaExhausted: isQuota,
+      quotaMessage: isQuota
+        ? "AI rate limit or daily request quota was reached. Showing verified offline curriculum explanation."
+        : classified.safeMessage,
+    };
   }
-
-  if (lastError) {
-    console.warn("[callGeminiGenerate] All candidate models failed:", lastError?.message || lastError);
-  }
-
-  return {
-    text: "",
-    isQuotaExhausted: quotaExhaustedEncountered,
-    quotaMessage: quotaExhaustedEncountered
-      ? "AI rate limit or daily request quota was reached. Showing offline curriculum explanation."
-      : undefined,
-  };
 }
 
 export interface PYQQuestionPayload {
@@ -622,7 +595,7 @@ async function generatePYQQuestion(
   }
 
   // If Gemini is available, generate dynamically
-  if (ai) {
+  if (getGeminiClient()) {
     const prompt = `You are a certified senior board examiner for ${board} board examinations.
 Provide exactly ONE authentic previous year board examination Multiple Choice Question (MCQ) from the year ${year} for ${board} ${classLevel} ${subject}.
 
@@ -1071,7 +1044,7 @@ async function generateQuestionSet(
   };
 
   // 1. If Gemini AI is available, generate dynamically
-  if (ai) {
+  if (getGeminiClient()) {
     const prompt = `You are a certified senior examiner for ${board} ${classLevel} ${subject}.
 The student requests interactive practice questions strictly on the topic: "${topic}".
 
@@ -1434,7 +1407,8 @@ export async function processAIChatQuery(params: AIChatParams): Promise<AIChatRe
 
   // === 3. CONCEPT EXPLANATION REQUEST ===
   if (detected.intent === "CONCEPT_EXPLANATION") {
-    if (ai) {
+    const client = getGeminiClient();
+    if (client) {
       const prompt = `You are EduPye AI, a helpful, friendly, world-class academic tutor for school and competitive exam students (${studentBoard} ${studentClass}).
 
 STUDENT QUERY: "${message}"
@@ -1469,16 +1443,16 @@ INSTRUCTIONS:
       return {
         reply: generateAcademicExplanation(message, studentBoard, studentClass),
         intent: "CONCEPT_EXPLANATION",
-        isQuotaExhausted: quotaHit || !ai,
-        quotaMessage: quotaHitMsg || (ai ? "AI rate limit or daily request quota reached. Providing verified offline curriculum response." : "AI engine is offline."),
+        isQuotaExhausted: quotaHit,
+        quotaMessage: quotaHitMsg || (client ? undefined : "AI engine is operating in offline curriculum mode."),
       };
     }
 
     return {
       reply: generateAcademicExplanation(message, studentBoard, studentClass),
       intent: "CONCEPT_EXPLANATION",
-      isQuotaExhausted: true,
-      quotaMessage: "AI engine is not configured or in offline mode.",
+      isQuotaExhausted: false,
+      quotaMessage: "AI engine is operating in offline curriculum mode.",
     };
   }
 
@@ -1488,7 +1462,8 @@ INSTRUCTIONS:
     return { reply: conversationalReply, intent: "CASUAL" };
   }
 
-  if (ai) {
+  const client = getGeminiClient();
+  if (client) {
     try {
       const casualPrompt = `You are EduPye AI, a friendly, encouraging, knowledgeable academic companion for students.
 The student said: "${message}"

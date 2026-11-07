@@ -486,7 +486,7 @@ export const startTestAttempt = async (
 
   const resolvedAttemptMode: "practice" | "scheduled_test" =
     attemptMode ||
-    (test.usages?.practice && !test.usages?.scheduledTest ? "practice" : "scheduled_test");
+    (test.usages?.scheduledTest ? "scheduled_test" : "practice");
 
   const studentSectionIds = await getStudentClassSectionIds(studentProfileId);
   let matchedSectionId: mongoose.Types.ObjectId | undefined;

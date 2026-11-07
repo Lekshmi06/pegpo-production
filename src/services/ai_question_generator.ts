@@ -1,27 +1,28 @@
-import { GoogleGenAI } from "@google/genai";
 import { AcademicContext } from "./academic_context_service";
-
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-const DEFAULT_MODEL = "gemini-3.5-flash";
-const CANDIDATE_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
-  "gemini-flash-lite-latest",
-  "gemini-3.1-flash-lite",
-];
+import {
+  getGeminiClient,
+  getGeminiModel,
+  GEMINI_FALLBACK_MODELS,
+  classifyGeminiError,
+} from "../config/gemini_config";
 
 /**
  * Executes a generation prompt trying candidate models sequentially upon rate-limit or availability errors.
  */
 async function callGeminiWithModelFallback(prompt: string): Promise<string> {
-  if (!ai) return "";
+  const client = getGeminiClient();
+  if (!client) return "";
+
+  const primaryModel = getGeminiModel();
+  const modelsToTry = [
+    primaryModel,
+    ...GEMINI_FALLBACK_MODELS.filter((m) => m !== primaryModel),
+  ];
 
   let lastError: any = null;
-  for (const model of CANDIDATE_MODELS) {
+  for (const model of modelsToTry) {
     try {
-      const response = await ai.models.generateContent({
+      const response = await client.models.generateContent({
         model,
         contents: prompt,
       });
@@ -31,8 +32,13 @@ async function callGeminiWithModelFallback(prompt: string): Promise<string> {
       }
     } catch (err: any) {
       lastError = err;
+      const classified = classifyGeminiError(err);
+      if (classified.kind === "AUTH_ERROR") {
+        console.warn(`[ai_question_generator] Auth error on model ${model}: ${classified.safeMessage}`);
+        return "";
+      }
       console.warn(
-        `[ai_question_generator] Model ${model} failed: ${err.message?.slice(0, 100)}. Trying fallback model...`
+        `[ai_question_generator] Model ${model} failed (${classified.kind}: ${classified.safeMessage}). Trying fallback model...`
       );
     }
   }
@@ -719,7 +725,7 @@ export async function generateUniversalQuestions(
   const targetTopic = topic || `${subject} Core Curriculum`;
 
   // If AI client not configured or unavailable
-  if (!ai) {
+  if (!getGeminiClient()) {
     console.log(
       "Gemini API client not initialized (GEMINI_API_KEY unset)."
     );
