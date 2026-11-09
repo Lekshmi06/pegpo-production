@@ -182,12 +182,44 @@ export const updateStudent = async (
     studentUpdate.goal = data.goal;
   }
 
-  if (data.learningPath !== undefined) {
-    studentUpdate.learningPath = data.learningPath;
+  // First confirm that the student profile exists.
+  const studentProfile = await StudentProfile.findById(
+    studentProfileId
+  );
+
+  if (!studentProfile) {
+    throw new Error("Student not found");
   }
 
-  if (data.education !== undefined) {
-    studentUpdate.education = data.education;
+  // Preserve existing education fields and map learningPath to education.level safely
+  const existingEdu = studentProfile.education
+    ? (typeof (studentProfile.education as any).toObject === "function"
+        ? (studentProfile.education as any).toObject()
+        : { ...studentProfile.education })
+    : {};
+
+  if (data.learningPath !== undefined) {
+    studentUpdate.learningPath = data.learningPath;
+    const cleanTrack = String(data.learningPath).trim().toLowerCase();
+    const mappedLevel =
+      cleanTrack === "undergraduate"
+        ? "undergraduate"
+        : cleanTrack === "postgraduate"
+        ? "postgraduate"
+        : cleanTrack === "competitive_exam" || cleanTrack === "competitive"
+        ? "competitive_exam"
+        : "school";
+
+    studentUpdate.education = {
+      ...existingEdu,
+      ...(data.education || {}),
+      level: data.education?.level || mappedLevel,
+    };
+  } else if (data.education !== undefined) {
+    studentUpdate.education = {
+      ...existingEdu,
+      ...data.education,
+    };
   }
 
   if (data.schoolDetails !== undefined) {
@@ -208,15 +240,6 @@ export const updateStudent = async (
 
   if (data.studyPreferences !== undefined) {
     studentUpdate.studyPreferences = data.studyPreferences;
-  }
-
-  // First confirm that the student profile exists.
-  const studentProfile = await StudentProfile.findById(
-    studentProfileId
-  );
-
-  if (!studentProfile) {
-    throw new Error("Student not found");
   }
 
   // Update StudentProfile fields.
