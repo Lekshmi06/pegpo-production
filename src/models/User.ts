@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema } from "mongoose";
+import crypto from "crypto";
 
 export type UserRole =
   | "student"
@@ -9,7 +10,8 @@ export type UserRole =
   | "work"
   | "personal"
   | "provider"
-  | "learner";
+  | "learner"
+  | "tuition_provider";
 
 export interface IUserExternalIdentity {
   sourceSystem: "school" | "college";
@@ -23,7 +25,11 @@ export interface IUser extends Document {
   email: string;
   password?: string;
   name?: string;
-  userType: UserRole;
+  userType: UserRole; // backward-compatible role indicator
+  roles: UserRole[]; // all assigned active roles
+  activeRole: UserRole; // currently active workspace role
+  studentCode?: string; // Permanent student code, e.g. STU-A1B2C3
+  teacherCode?: string; // Permanent teacher code, e.g. TCH-D4E5F6
   language?: string;
   status?: "active" | "suspended" | "deactivated";
   isSuspended?: boolean;
@@ -67,7 +73,60 @@ const userSchema = new Schema<IUser>(
         "personal",
         "provider",
         "learner",
+        "tuition_provider",
       ],
+    },
+
+    roles: {
+      type: [String],
+      enum: [
+        "student",
+        "teacher",
+        "researcher",
+        "institution",
+        "company",
+        "work",
+        "personal",
+        "provider",
+        "learner",
+        "tuition_provider",
+      ],
+      default: undefined,
+    },
+
+    activeRole: {
+      type: String,
+      enum: [
+        "student",
+        "teacher",
+        "researcher",
+        "institution",
+        "company",
+        "work",
+        "personal",
+        "provider",
+        "learner",
+        "tuition_provider",
+      ],
+      default: undefined,
+    },
+
+    studentCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
+
+    teacherCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      uppercase: true,
+      index: true,
     },
 
     language: {
@@ -109,6 +168,87 @@ userSchema.index(
   { sparse: true }
 );
 
+// Helper functions to generate human-readable unique codes
+export function generateStudentCode(): string {
+  const rand = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `STU-${rand}`;
+}
+
+export function generateTeacherCode(): string {
+  const rand = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `TCH-${rand}`;
+}
+
+// Guarantee role synchronization, backward compatibility, and permanent code assignment before saving
+userSchema.pre("save", function (this: IUser) {
+  if (!this.roles || !Array.isArray(this.roles) || this.roles.length === 0) {
+    this.roles = [this.userType || "student"];
+  } else if (this.userType && !this.roles.includes(this.userType)) {
+    this.roles.push(this.userType);
+  }
+
+  if (!this.activeRole) {
+    this.activeRole = this.userType || this.roles[0] || "student";
+  }
+
+  // Keep legacy userType synchronized with activeRole
+  this.userType = this.activeRole;
+
+  // Auto-generate permanent studentCode if user is a student and has no code
+  const isStudent =
+    this.userType === "student" ||
+    this.activeRole === "student" ||
+    (Array.isArray(this.roles) && this.roles.some((r) => ["student", "learner", "personal"].includes(r)));
+  if (isStudent && !this.studentCode) {
+    this.studentCode = generateStudentCode();
+  }
+
+  // Auto-generate permanent teacherCode if user is a teacher/tuition_provider and has no code
+  const isTeacher =
+    this.userType === "teacher" ||
+    this.userType === "tuition_provider" ||
+    this.activeRole === "teacher" ||
+    this.activeRole === "tuition_provider" ||
+    (Array.isArray(this.roles) && this.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+  if (isTeacher && !this.teacherCode) {
+    this.teacherCode = generateTeacherCode();
+  }
+});
+
 const User = mongoose.model<IUser>("User", userSchema);
+
+/**
+ * Backfill helper to assign permanent studentCode and teacherCode to pre-existing user records.
+ */
+export async function backfillUserCodes(): Promise<{ studentsUpdated: number; teachersUpdated: number }> {
+  let studentsUpdated = 0;
+  let teachersUpdated = 0;
+
+  // Students missing code
+  const studentsWithoutCode = await User.find({
+    $or: [{ userType: "student" }, { roles: { $in: ["student", "learner", "personal"] } }],
+    studentCode: { $exists: false },
+  });
+
+  for (const s of studentsWithoutCode) {
+    s.studentCode = generateStudentCode();
+    await s.save();
+    studentsUpdated++;
+  }
+
+  // Teachers missing code
+  const teachersWithoutCode = await User.find({
+    $or: [{ userType: "teacher" }, { userType: "tuition_provider" }, { roles: { $in: ["teacher", "tuition_provider"] } }],
+    teacherCode: { $exists: false },
+  });
+
+  for (const t of teachersWithoutCode) {
+    t.teacherCode = generateTeacherCode();
+    await t.save();
+    teachersUpdated++;
+  }
+
+  return { studentsUpdated, teachersUpdated };
+}
 
 export default User;

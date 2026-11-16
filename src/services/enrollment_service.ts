@@ -1,5 +1,7 @@
 import Enrollment, { IEnrollment } from "../models/Enrollment";
 import Course, { ICourse, ILesson } from "../models/Course";
+import CoursePaymentPlan from "../models/CoursePaymentPlan";
+import { issueCourseCertificate } from "./certificate_service";
 import mongoose from "mongoose";
 
 export const enrollInCourse = async (
@@ -76,9 +78,11 @@ export const getLearnerCourseLearningState = async (
   learnerId: string,
   courseId: string
 ): Promise<{
-  course: ICourse;
+  course: any;
   enrollment: IEnrollment;
   isOwner: boolean;
+  paymentPlan?: any;
+  unlockedInstalments: number;
 }> => {
   if (!mongoose.Types.ObjectId.isValid(courseId)) {
     throw new Error("Invalid course ID");
@@ -102,8 +106,48 @@ export const getLearnerCourseLearningState = async (
     throw new Error("Forbidden: You are not enrolled in this course");
   }
 
+  // Load payment plan if any
+  const paymentPlan = await CoursePaymentPlan.findOne({
+    learner: learnerObjectId,
+    course: course._id,
+  }).sort({ updatedAt: -1 });
+
+  // Calculate unlocked milestone level
+  let unlockedInstalments = 999;
+  if (!isOwner && course.price > 0) {
+    if (paymentPlan) {
+      if (paymentPlan.planType === "full" && paymentPlan.status === "completed") {
+        unlockedInstalments = 999;
+      } else if (paymentPlan.planType === "instalment") {
+        unlockedInstalments = paymentPlan.paidInstalmentsCount;
+      }
+    } else if (enrollment?.paymentStatus === "paid" || enrollment?.paymentStatus === "waived") {
+      unlockedInstalments = 999;
+    } else {
+      unlockedInstalments = 1;
+    }
+  }
+
+  // Clone course and annotate sections with progressive lock status
+  const courseObj = course.toObject();
+  if (courseObj.sections && Array.isArray(courseObj.sections)) {
+    courseObj.sections = courseObj.sections.map((sec: any) => {
+      const requiredInstalment = sec.requiredInstalmentNumber || 1;
+      const isLocked = !isOwner && requiredInstalment > unlockedInstalments;
+      return {
+        ...sec,
+        isLocked,
+        requiredInstalmentNumber: requiredInstalment,
+        lessons: sec.lessons?.map((les: any) => ({
+          ...les,
+          isLocked: isLocked && !les.isPreviewFree,
+        })),
+      };
+    });
+  }
+
   return {
-    course,
+    course: courseObj,
     enrollment: (enrollment || {
       learner: learnerObjectId,
       course: course._id,
@@ -114,6 +158,8 @@ export const getLearnerCourseLearningState = async (
       enrolledAt: new Date(),
     }) as any,
     isOwner,
+    paymentPlan,
+    unlockedInstalments,
   };
 };
 
@@ -155,6 +201,55 @@ export const updateLessonProgress = async (
     }
   }
 
+  // Validate lesson exists in course
+  let targetLesson: any = null;
+  let targetSection: any = null;
+  if (course.sections && Array.isArray(course.sections)) {
+    for (const sec of course.sections) {
+      const l = (sec.lessons as any).id(lessonId);
+      if (l) {
+        targetLesson = l;
+        targetSection = sec;
+        break;
+      }
+    }
+  }
+
+  if (!targetLesson) {
+    throw new Error("Lesson not found in course");
+  }
+
+  // If learner is not owner and course is paid, ensure the section is unlocked
+  const isOwner = course.provider.toString() === learnerId.toString();
+  if (!isOwner && course.price > 0 && targetSection) {
+    const requiredInstalment = targetSection.requiredInstalmentNumber || 1;
+    if (requiredInstalment > 1) {
+      const paymentPlan = await CoursePaymentPlan.findOne({
+        learner: learnerObjectId,
+        course: course._id,
+      }).sort({ updatedAt: -1 });
+
+      let unlockedInstalments = 999;
+      if (paymentPlan) {
+        if (paymentPlan.planType === "full" && paymentPlan.status === "completed") {
+          unlockedInstalments = 999;
+        } else if (paymentPlan.planType === "instalment") {
+          unlockedInstalments = paymentPlan.paidInstalmentsCount;
+        }
+      } else if (enrollment.paymentStatus === "paid" || enrollment.paymentStatus === "waived") {
+        unlockedInstalments = 999;
+      } else {
+        unlockedInstalments = 1;
+      }
+
+      if (requiredInstalment > unlockedInstalments) {
+        throw new Error(
+          `Forbidden: Cannot complete lesson in locked milestone section #${requiredInstalment}. Payment required.`
+        );
+      }
+    }
+  }
+
   const completedSet = new Set(enrollment.completedLessons || []);
   if (completed) {
     completedSet.add(lessonId.toString());
@@ -173,11 +268,19 @@ export const updateLessonProgress = async (
   if (progress >= 100) {
     enrollment.status = "completed";
     enrollment.completedAt = new Date();
+    await enrollment.save();
+
+    // Auto-generate official course completion certificate
+    try {
+      await issueCourseCertificate(learnerId, courseId);
+    } catch {
+      // Non-blocking certificate background generation
+    }
   } else {
     enrollment.status = "active";
+    await enrollment.save();
   }
 
-  await enrollment.save();
   return { enrollment };
 };
 
@@ -191,12 +294,14 @@ export const verifyLessonAccess = async (
     throw new Error("Course not found");
   }
 
-  // Find the lesson in course sections
+  // Find the lesson and its parent section
   let foundLesson: ILesson | null = null;
+  let parentSection: any = null;
   for (const sec of course.sections) {
     const l = (sec.lessons as any).id(lessonId);
     if (l) {
       foundLesson = l;
+      parentSection = sec;
       break;
     }
   }
@@ -228,6 +333,36 @@ export const verifyLessonAccess = async (
 
   if (!enrollment) {
     throw new Error("Forbidden: You must enroll in this course to access protected lesson content");
+  }
+
+  // Progressive content access check
+  if (course.price > 0 && parentSection) {
+    const requiredInstalment = parentSection.requiredInstalmentNumber || 1;
+    if (requiredInstalment > 1) {
+      const paymentPlan = await CoursePaymentPlan.findOne({
+        learner: new mongoose.Types.ObjectId(userId),
+        course: course._id,
+      }).sort({ updatedAt: -1 });
+
+      let unlockedInstalments = 999;
+      if (paymentPlan) {
+        if (paymentPlan.planType === "full" && paymentPlan.status === "completed") {
+          unlockedInstalments = 999;
+        } else if (paymentPlan.planType === "instalment") {
+          unlockedInstalments = paymentPlan.paidInstalmentsCount;
+        }
+      } else if (enrollment.paymentStatus === "paid" || enrollment.paymentStatus === "waived") {
+        unlockedInstalments = 999;
+      } else {
+        unlockedInstalments = 1;
+      }
+
+      if (requiredInstalment > unlockedInstalments) {
+        throw new Error(
+          `Forbidden: Section locked. This module requires instalment #${requiredInstalment} payment to unlock.`
+        );
+      }
+    }
   }
 
   return { lesson: foundLesson, courseTitle: course.title };

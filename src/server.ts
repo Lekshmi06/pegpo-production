@@ -28,9 +28,15 @@ import teacherMaterialRoutes from "./routes/teacher_material_routes";
 import studentRecognitionRoutes from "./routes/student_recognition_routes";
 import courseRoutes from "./routes/course_routes";
 import learnerCourseRoutes from "./routes/learner_course_routes";
+import paymentRoutes from "./routes/payment_routes";
+import reviewRoutes from "./routes/review_routes";
 import institutionRoutes from "./routes/institution_routes";
 import ssoRoutes from "./routes/sso_routes";
 import assignmentRoutes from "./routes/assignment_routes";
+import tuitionRoutes from "./routes/tuition_routes";
+import liveClassRoutes from "./routes/live_class_routes";
+import http from "http";
+import { setupClassroomSignallingServer } from "./websocket/classroom_signalling";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -112,7 +118,11 @@ app.use("/api/auth", authRoutes);
 app.use("/api/sso", ssoRoutes);
 app.use("/api/institutions", institutionRoutes);
 app.use("/api/courses", courseRoutes);
+app.use("/api/tuition", tuitionRoutes);
 app.use("/api/learner", learnerCourseRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/reviews", reviewRoutes);
+app.use("/api", reviewRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/teachers", teacherRoutes);
 app.use("/api/teacher", teacherRoutes);
@@ -132,6 +142,7 @@ app.use("/api/assessments", assessmentRoutes);
 app.use("/api/teacher/materials", teacherMaterialRoutes);
 app.use("/api/materials", teacherMaterialRoutes);
 app.use("/api/assignments", assignmentRoutes);
+app.use("/api/live-classes", liveClassRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/workspace", workspaceRoutes);
 app.use("/api/competitive", competitiveRoutes);
@@ -156,16 +167,19 @@ app.get("/", (req, res) => {
 
 import { validateSSOConfigurationOnStartup } from "./services/sso_service";
 
+const httpServer = http.createServer(app);
+setupClassroomSignallingServer(httpServer);
+
 const startServer = async (): Promise<void> => {
   validateSSOConfigurationOnStartup();
   await connectDB();
 
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 };
 
-export { app, startServer };
+export { app, httpServer, startServer };
 export default app;
 
 const isDirectRun =

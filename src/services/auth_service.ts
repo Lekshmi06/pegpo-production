@@ -3,6 +3,7 @@ import User, { IUser, UserRole } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
+import TuitionProviderProfile from "../models/TuitionProviderProfile";
 import Course from "../models/Course";
 import { hashPassword, verifyPassword, isLegacyPlaintext } from "../utils/password";
 import { generateSessionToken, verifySessionToken } from "../utils/token";
@@ -25,12 +26,31 @@ export interface AuthResult {
     email: string;
     name?: string;
     userType: string;
+    activeRole: string;
+    roles: string[];
     language?: string;
   };
   studentProfile?: any;
   teacherProfile?: any;
   researcherProfile?: any;
   token: string;
+}
+
+export function formatUserResponse(user: IUser) {
+  const activeRole = user.activeRole || user.userType || "student";
+  const roles =
+    user.roles && Array.isArray(user.roles) && user.roles.length > 0
+      ? user.roles
+      : [activeRole];
+  return {
+    _id: (user._id as any).toString(),
+    email: user.email,
+    name: user.name,
+    userType: activeRole,
+    activeRole,
+    roles,
+    language: user.language || "English",
+  };
 }
 
 export const registerUser = async (data: RegisterInput): Promise<AuthResult> => {
@@ -66,6 +86,8 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       password: hashedPassword,
       name: resolvedName,
       userType: targetRole,
+      activeRole: targetRole,
+      roles: [targetRole],
       language: "English",
     });
   } catch (createErr: any) {
@@ -87,13 +109,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       });
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         teacherProfile,
         token: sessionToken,
       };
@@ -109,14 +125,29 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       });
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         researcherProfile,
+        token: sessionToken,
+      };
+    }
+
+    if (targetRole === "tuition_provider") {
+      let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
+      if (!tuitionProfile) {
+        tuitionProfile = await TuitionProviderProfile.create({
+          userId: user._id,
+          fullName: resolvedName,
+          headline: "Tuition Faculty & Subject Mentor",
+          verificationStatus: "pending",
+          platformTier: "standard",
+          calculatedTier: "standard",
+          isProvisionalTier: true,
+          isActive: true,
+        });
+      }
+
+      return {
+        user: formatUserResponse(user),
         token: sessionToken,
       };
     }
@@ -128,13 +159,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       targetRole === "institution"
     ) {
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         token: sessionToken,
       };
     }
@@ -161,13 +186,7 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
     });
 
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       studentProfile,
       token: sessionToken,
     };
@@ -207,13 +226,57 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     await user.save();
   }
 
+  // Synchronize roles array and activeRole
+  let userModified = false;
+  if (!user.roles || !Array.isArray(user.roles) || user.roles.length === 0) {
+    user.roles = [user.userType || "student"];
+    userModified = true;
+  }
+  if (!user.activeRole) {
+    user.activeRole = user.userType || user.roles[0] || "student";
+    userModified = true;
+  }
+
+  // Populate implicit roles if profile exists or authored courses
+  const hasAuthoredCourses = await Course.exists({ provider: user._id });
+  if (hasAuthoredCourses && !user.roles.includes("provider")) {
+    user.roles.push("provider");
+    userModified = true;
+  }
+  const hasTeacherProfile = await TeacherProfile.exists({ userId: user._id });
+  if (hasTeacherProfile && !user.roles.includes("teacher")) {
+    user.roles.push("teacher");
+    userModified = true;
+  }
+  const hasStudentProfile = await StudentProfile.exists({ userId: user._id });
+  if (hasStudentProfile && !user.roles.includes("student")) {
+    user.roles.push("student");
+    userModified = true;
+  }
+  const hasResearcherProfile = await ResearcherProfile.exists({ userId: user._id });
+  if (hasResearcherProfile && !user.roles.includes("researcher")) {
+    user.roles.push("researcher");
+    userModified = true;
+  }
+  const hasTuitionProfile = await TuitionProviderProfile.exists({ userId: user._id });
+  if (hasTuitionProfile && !user.roles.includes("tuition_provider")) {
+    user.roles.push("tuition_provider");
+    userModified = true;
+  }
+
+  if (userModified) {
+    await user.save();
+  }
+
   const sessionToken = generateSessionToken(user);
 
   const resolvedName =
     user.name ||
     cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-  if (user.userType === "teacher") {
+  const currentActiveRole = user.activeRole || user.userType || "student";
+
+  if (currentActiveRole === "teacher") {
     let teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
 
     if (!teacherProfile) {
@@ -226,42 +289,20 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     }
 
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       teacherProfile,
       token: sessionToken,
     };
   }
 
-  // 2. Direct Provider Role or Existing Course Author Resolution
-  // If the account has userType === "provider" or has authored courses (and is not a teacher),
-  // strictly resolve as course provider without forcing into researcher onboarding.
-  const hasAuthoredCourses = await Course.exists({ provider: user._id });
-  if (user.userType === "provider" || hasAuthoredCourses) {
-    if (user.userType !== "provider") {
-      user.userType = "provider";
-      await user.save();
-    }
-
+  if (currentActiveRole === "provider") {
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: "provider",
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       token: sessionToken,
     };
   }
 
-  // 3. Researcher Role
-  if (user.userType === "researcher") {
+  if (currentActiveRole === "researcher") {
     let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
 
     if (!researcherProfile) {
@@ -275,32 +316,20 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     }
 
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       researcherProfile,
       token: sessionToken,
     };
   }
 
-  // 4. Other Specialized Roles
   if (
-    user.userType === "learner" ||
-    user.userType === "company" ||
-    user.userType === "institution"
+    currentActiveRole === "learner" ||
+    currentActiveRole === "company" ||
+    currentActiveRole === "institution" ||
+    currentActiveRole === "tuition_provider"
   ) {
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       token: sessionToken,
     };
   }
@@ -330,13 +359,7 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
   }
 
   return {
-    user: {
-      _id: (user._id as any).toString(),
-      email: user.email,
-      name: user.name,
-      userType: user.userType,
-      language: user.language,
-    },
+    user: formatUserResponse(user),
     studentProfile,
     token: sessionToken,
   };
@@ -358,70 +381,83 @@ export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => 
     throw new Error("User not found");
   }
 
-  const sessionToken = generateSessionToken(user);
+  // Synchronize roles array and activeRole
+  let userModified = false;
+  if (!user.roles || !Array.isArray(user.roles) || user.roles.length === 0) {
+    user.roles = [user.userType || "student"];
+    userModified = true;
+  }
+  if (!user.activeRole) {
+    user.activeRole = user.userType || user.roles[0] || "student";
+    userModified = true;
+  }
 
-  if (user.userType === "teacher") {
+  const hasAuthoredCourses = await Course.exists({ provider: user._id });
+  if (hasAuthoredCourses && !user.roles.includes("provider")) {
+    user.roles.push("provider");
+    userModified = true;
+  }
+  const hasTeacherProfile = await TeacherProfile.exists({ userId: user._id });
+  if (hasTeacherProfile && !user.roles.includes("teacher")) {
+    user.roles.push("teacher");
+    userModified = true;
+  }
+  const hasStudentProfile = await StudentProfile.exists({ userId: user._id });
+  if (hasStudentProfile && !user.roles.includes("student")) {
+    user.roles.push("student");
+    userModified = true;
+  }
+  const hasResearcherProfile = await ResearcherProfile.exists({ userId: user._id });
+  if (hasResearcherProfile && !user.roles.includes("researcher")) {
+    user.roles.push("researcher");
+    userModified = true;
+  }
+  const hasTuitionProfile = await TuitionProviderProfile.exists({ userId: user._id });
+  if (hasTuitionProfile && !user.roles.includes("tuition_provider")) {
+    user.roles.push("tuition_provider");
+    userModified = true;
+  }
+
+  if (userModified) {
+    await user.save();
+  }
+
+  const sessionToken = generateSessionToken(user);
+  const currentActiveRole = user.activeRole || user.userType || "student";
+
+  if (currentActiveRole === "teacher") {
     const teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       teacherProfile,
       token: sessionToken,
     };
   }
 
-  const hasAuthoredCourses = await Course.exists({ provider: user._id });
-  if (user.userType === "provider" || hasAuthoredCourses) {
-    if (user.userType !== "provider") {
-      user.userType = "provider";
-      await user.save();
-    }
-
+  if (currentActiveRole === "provider") {
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: "provider",
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       token: sessionToken,
     };
   }
 
-  if (user.userType === "researcher") {
+  if (currentActiveRole === "researcher") {
     const researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       researcherProfile,
       token: sessionToken,
     };
   }
 
   if (
-    user.userType === "learner" ||
-    user.userType === "company" ||
-    user.userType === "institution"
+    currentActiveRole === "learner" ||
+    currentActiveRole === "company" ||
+    currentActiveRole === "institution" ||
+    currentActiveRole === "tuition_provider"
   ) {
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       token: sessionToken,
     };
   }
@@ -429,13 +465,7 @@ export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => 
   const studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
 
   return {
-    user: {
-      _id: (user._id as any).toString(),
-      email: user.email,
-      name: user.name,
-      userType: user.userType,
-      language: user.language,
-    },
+    user: formatUserResponse(user),
     studentProfile,
     token: sessionToken,
   };
@@ -472,6 +502,13 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
     throw new Error("User not found");
   }
 
+  if (!user.roles || !Array.isArray(user.roles)) {
+    user.roles = [user.userType || "student"];
+  }
+  if (!user.roles.includes(targetRole)) {
+    user.roles.push(targetRole);
+  }
+  user.activeRole = targetRole;
   user.userType = targetRole;
   await user.save();
 
@@ -492,13 +529,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
       })) as any;
     }
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       teacherProfile,
       token: sessionToken,
     };
@@ -516,13 +547,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
       })) as any;
     }
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       researcherProfile,
       token: sessionToken,
     };
@@ -552,13 +577,7 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
       })) as any;
     }
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       studentProfile,
       token: sessionToken,
     };
@@ -566,15 +585,209 @@ export const updateUserRole = async (input: UpdateRoleInput): Promise<AuthResult
 
   // provider, learner, company, institution, etc.
   return {
-    user: {
-      _id: (user._id as any).toString(),
-      email: user.email,
-      name: user.name,
-      userType: user.userType,
-      language: user.language,
-    },
+    user: formatUserResponse(user),
     token: sessionToken,
   };
+};
+
+export interface SwitchRoleInput {
+  userId: string;
+  role: UserRole;
+}
+
+export const switchUserRole = async (input: SwitchRoleInput): Promise<AuthResult> => {
+  const { userId, role } = input;
+  if (!role) {
+    throw new Error("Target role is required");
+  }
+
+  const validRoles: UserRole[] = [
+    "student",
+    "teacher",
+    "researcher",
+    "institution",
+    "company",
+    "work",
+    "personal",
+    "provider",
+    "learner",
+    "tuition_provider",
+  ];
+  if (!validRoles.includes(role)) {
+    throw new Error(`Invalid role '${role}'.`);
+  }
+
+  let resolvedUserId = userId;
+  const decoded = verifySessionToken(userId);
+  if (decoded?.userId) {
+    resolvedUserId = decoded.userId;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(resolvedUserId)) {
+    throw new Error("Invalid session token or user ID");
+  }
+
+  const user = await User.findById(resolvedUserId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  // Ensure user.roles has existing roles populated
+  if (!user.roles || !Array.isArray(user.roles) || user.roles.length === 0) {
+    user.roles = [user.userType || "student"];
+  }
+
+  // Check if user has authored courses, teacher profile, student profile, etc., and populate roles
+  const hasAuthoredCourses = await Course.exists({ provider: user._id });
+  if (hasAuthoredCourses && !user.roles.includes("provider")) {
+    user.roles.push("provider");
+  }
+  const hasTeacherProfile = await TeacherProfile.exists({ userId: user._id });
+  if (hasTeacherProfile && !user.roles.includes("teacher")) {
+    user.roles.push("teacher");
+  }
+  const hasStudentProfile = await StudentProfile.exists({ userId: user._id });
+  if (hasStudentProfile && !user.roles.includes("student")) {
+    user.roles.push("student");
+  }
+  const hasResearcherProfile = await ResearcherProfile.exists({ userId: user._id });
+  if (hasResearcherProfile && !user.roles.includes("researcher")) {
+    user.roles.push("researcher");
+  }
+
+  // Strict check: user can only switch to a role they possess
+  if (!user.roles.includes(role)) {
+    throw new Error(`Unauthorized: You do not possess the '${role}' role. Please activate this role first.`);
+  }
+
+  user.activeRole = role;
+  user.userType = role;
+  await user.save();
+
+  const sessionToken = generateSessionToken(user);
+  const resolvedName =
+    user.name ||
+    user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  let studentProfile = null;
+  let teacherProfile = null;
+  let researcherProfile = null;
+
+  if (role === "teacher") {
+    teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
+    if (!teacherProfile) {
+      teacherProfile = (await TeacherProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        teacherType: "institution",
+        goal: "Lesson Planning",
+      })) as any;
+    }
+  } else if (role === "researcher") {
+    researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
+    if (!researcherProfile) {
+      researcherProfile = (await ResearcherProfile.create({
+        userId: user._id,
+        fullName: resolvedName,
+        contact: { email: user.email },
+        onboardingCompleted: false,
+        onboardingStep: 1,
+      })) as any;
+    }
+  } else if (role === "student" || role === "learner") {
+    studentProfile = await StudentProfile.findOne({ userId: user._id }).lean();
+    if (!studentProfile && role === "student") {
+      studentProfile = (await StudentProfile.create({
+        userId: user._id,
+        name: resolvedName,
+        goal: "School Curriculum Mastery",
+        learningPath: "school",
+        education: {
+          level: "school",
+          institution: "School",
+          board: "CBSE",
+          classLevel: "Class 10",
+        },
+      })) as any;
+    }
+  }
+
+  return {
+    user: formatUserResponse(user),
+    studentProfile,
+    teacherProfile,
+    researcherProfile,
+    token: sessionToken,
+  };
+};
+
+export interface ActivateRoleInput {
+  userId: string;
+  role: UserRole;
+}
+
+export const activateUserRole = async (input: ActivateRoleInput): Promise<AuthResult> => {
+  const { userId, role } = input;
+  if (!role) {
+    throw new Error("Role to activate is required");
+  }
+
+  const validRoles: UserRole[] = [
+    "student",
+    "teacher",
+    "researcher",
+    "institution",
+    "company",
+    "work",
+    "personal",
+    "provider",
+    "learner",
+    "tuition_provider",
+  ];
+  if (!validRoles.includes(role)) {
+    throw new Error(`Invalid role '${role}'.`);
+  }
+
+  // Security constraint: Prevent unauthorized self-assignment of privileged enterprise/institution/teacher roles
+  if (
+    role === "institution" ||
+    role === "company" ||
+    role === "teacher" ||
+    (role as string) === "tuition_provider"
+  ) {
+    throw new Error(
+      `Role '${role}' requires official verification, institutional invitation, or an onboarding application. Self-activation via direct API is disabled.`
+    );
+  }
+
+  let resolvedUserId = userId;
+  const decoded = verifySessionToken(userId);
+  if (decoded?.userId) {
+    resolvedUserId = decoded.userId;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(resolvedUserId)) {
+    throw new Error("Invalid session token or user ID");
+  }
+
+  const user = await User.findById(resolvedUserId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!user.roles || !Array.isArray(user.roles)) {
+    user.roles = [user.userType || "student"];
+  }
+
+  if (!user.roles.includes(role)) {
+    user.roles.push(role);
+  }
+
+  user.activeRole = role;
+  user.userType = role;
+  await user.save();
+
+  return await switchUserRole({ userId: user._id.toString(), role });
 };
 
 export interface GoogleAuthInput {
@@ -706,10 +919,26 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
     }
   }
 
+  // Synchronize roles array and activeRole
+  let userModified = false;
+  if (!user.roles || !Array.isArray(user.roles) || user.roles.length === 0) {
+    user.roles = [user.userType || "student"];
+    userModified = true;
+  }
+  if (!user.activeRole) {
+    user.activeRole = user.userType || user.roles[0] || "student";
+    userModified = true;
+  }
+  if (userModified) {
+    await user.save();
+  }
+
   const sessionToken = generateSessionToken(user);
 
   try {
-    if (user.userType === "teacher") {
+    const currentActiveRole = user.activeRole || user.userType || "student";
+
+    if (currentActiveRole === "teacher") {
       let teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
       if (!teacherProfile) {
         teacherProfile = (await TeacherProfile.create({
@@ -721,20 +950,14 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
       }
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         teacherProfile,
         token: sessionToken,
         isNewUser,
       };
     }
 
-    if (user.userType === "researcher") {
+    if (currentActiveRole === "researcher") {
       let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
       if (!researcherProfile) {
         researcherProfile = (await ResearcherProfile.create({
@@ -747,13 +970,7 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
       }
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         researcherProfile,
         token: sessionToken,
         isNewUser,
@@ -761,19 +978,29 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
     }
 
     if (
-      user.userType === "provider" ||
-      user.userType === "learner" ||
-      user.userType === "company" ||
-      user.userType === "institution"
+      currentActiveRole === "provider" ||
+      currentActiveRole === "learner" ||
+      currentActiveRole === "company" ||
+      currentActiveRole === "institution" ||
+      currentActiveRole === "tuition_provider"
     ) {
+      if (currentActiveRole === "tuition_provider") {
+        const hasTProfile = await TuitionProviderProfile.exists({ userId: user._id });
+        if (!hasTProfile) {
+          await TuitionProviderProfile.create({
+            userId: user._id,
+            fullName: resolvedName,
+            headline: "Tuition Faculty & Subject Mentor",
+            verificationStatus: "pending",
+            platformTier: "standard",
+            calculatedTier: "standard",
+            isProvisionalTier: true,
+            isActive: true,
+          });
+        }
+      }
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         token: sessionToken,
         isNewUser,
       };
@@ -804,13 +1031,7 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
     }
 
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       studentProfile,
       token: sessionToken,
       isNewUser,
@@ -962,10 +1183,26 @@ export const authenticateMockGoogle = async (
     }
   }
 
+  // Synchronize roles array and activeRole
+  let userModified = false;
+  if (!user.roles || !Array.isArray(user.roles) || user.roles.length === 0) {
+    user.roles = [user.userType || "student"];
+    userModified = true;
+  }
+  if (!user.activeRole) {
+    user.activeRole = user.userType || user.roles[0] || "student";
+    userModified = true;
+  }
+  if (userModified) {
+    await user.save();
+  }
+
   const sessionToken = generateSessionToken(user);
 
   try {
-    if (user.userType === "teacher") {
+    const currentActiveRole = user.activeRole || user.userType || "student";
+
+    if (currentActiveRole === "teacher") {
       let teacherProfile = await TeacherProfile.findOne({ userId: user._id }).lean();
       if (!teacherProfile) {
         teacherProfile = (await TeacherProfile.create({
@@ -977,20 +1214,14 @@ export const authenticateMockGoogle = async (
       }
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         teacherProfile,
         token: sessionToken,
         isNewUser,
       };
     }
 
-    if (user.userType === "researcher") {
+    if (currentActiveRole === "researcher") {
       let researcherProfile = await ResearcherProfile.findOne({ userId: user._id }).lean();
       if (!researcherProfile) {
         researcherProfile = (await ResearcherProfile.create({
@@ -1003,13 +1234,7 @@ export const authenticateMockGoogle = async (
       }
 
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         researcherProfile,
         token: sessionToken,
         isNewUser,
@@ -1017,19 +1242,29 @@ export const authenticateMockGoogle = async (
     }
 
     if (
-      user.userType === "provider" ||
-      user.userType === "learner" ||
-      user.userType === "company" ||
-      user.userType === "institution"
+      currentActiveRole === "provider" ||
+      currentActiveRole === "learner" ||
+      currentActiveRole === "company" ||
+      currentActiveRole === "institution" ||
+      currentActiveRole === "tuition_provider"
     ) {
+      if (currentActiveRole === "tuition_provider") {
+        const hasTProfile = await TuitionProviderProfile.exists({ userId: user._id });
+        if (!hasTProfile) {
+          await TuitionProviderProfile.create({
+            userId: user._id,
+            fullName: resolvedName,
+            headline: "Tuition Faculty & Subject Mentor",
+            verificationStatus: "pending",
+            platformTier: "standard",
+            calculatedTier: "standard",
+            isProvisionalTier: true,
+            isActive: true,
+          });
+        }
+      }
       return {
-        user: {
-          _id: (user._id as any).toString(),
-          email: user.email,
-          name: user.name,
-          userType: user.userType,
-          language: user.language,
-        },
+        user: formatUserResponse(user),
         token: sessionToken,
         isNewUser,
       };
@@ -1060,13 +1295,7 @@ export const authenticateMockGoogle = async (
     }
 
     return {
-      user: {
-        _id: (user._id as any).toString(),
-        email: user.email,
-        name: user.name,
-        userType: user.userType,
-        language: user.language,
-      },
+      user: formatUserResponse(user),
       studentProfile,
       token: sessionToken,
       isNewUser,

@@ -22,6 +22,7 @@ export interface ICourseSection {
   title: string;
   description?: string;
   order: number;
+  requiredInstalmentNumber?: number; // Milestone mapping: 1 is unlocked with 1st instalment, 2 with 2nd, etc.
   lessons: ILesson[];
 }
 
@@ -38,6 +39,11 @@ export interface ICourse extends Document {
   language: string;
   price: number;
   currency: string;
+  allowInstalments?: boolean;
+  maxInstalments?: number;
+  instalmentFrequencyDays?: number;
+  averageRating?: number;
+  reviewCount?: number;
   status: CourseStatus;
   sections: ICourseSection[];
   totalLessons: number;
@@ -106,6 +112,11 @@ const sectionSchema = new Schema<ICourseSection>(
     order: {
       type: Number,
       default: 0,
+    },
+    requiredInstalmentNumber: {
+      type: Number,
+      default: 1,
+      min: 1,
     },
     lessons: {
       type: [lessonSchema],
@@ -181,6 +192,33 @@ const courseSchema = new Schema<ICourse>(
       type: String,
       default: "USD",
       trim: true,
+    },
+    allowInstalments: {
+      type: Boolean,
+      default: false,
+    },
+    maxInstalments: {
+      type: Number,
+      default: 3,
+      min: 2,
+      max: 12,
+    },
+    instalmentFrequencyDays: {
+      type: Number,
+      default: 30,
+      min: 7,
+      max: 90,
+    },
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5,
+    },
+    reviewCount: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     status: {
       type: String,

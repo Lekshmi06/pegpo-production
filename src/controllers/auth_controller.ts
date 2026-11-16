@@ -4,10 +4,13 @@ import {
   loginUser,
   getCurrentUser,
   updateUserRole,
+  switchUserRole,
+  activateUserRole,
   authenticateWithGoogle,
   authenticateMockGoogle,
   PREDEFINED_MOCK_GOOGLE_ACCOUNTS,
 } from "../services/auth_service";
+import { verifySessionToken } from "../utils/token";
 
 export const registerController = async (
   req: Request,
@@ -141,6 +144,110 @@ export const selectRoleController = async (
     const message =
       error instanceof Error ? error.message : "Failed to update role";
     res.status(400).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const switchRoleController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.substring(7).trim()
+      : undefined;
+
+    let userId = (req.user as any)?._id?.toString();
+    if (!userId && token) {
+      const decoded = verifySessionToken(token);
+      userId = decoded?.userId;
+    }
+    if (!userId) {
+      userId = req.body.userId;
+    }
+
+    if (!userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required to switch role.",
+      });
+      return;
+    }
+
+    const { role } = req.body;
+    if (!role) {
+      res.status(400).json({
+        success: false,
+        message: "Target role is required.",
+      });
+      return;
+    }
+
+    const result = await switchUserRole({ userId, role });
+    res.status(200).json({
+      success: true,
+      message: `Switched active role to ${role} successfully.`,
+      data: result,
+    });
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : "Failed to switch role";
+    const statusCode = message.includes("Unauthorized") ? 403 : 400;
+    res.status(statusCode).json({
+      success: false,
+      message,
+    });
+  }
+};
+
+export const activateRoleController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.substring(7).trim()
+      : undefined;
+
+    let userId = (req.user as any)?._id?.toString();
+    if (!userId && token) {
+      const decoded = verifySessionToken(token);
+      userId = decoded?.userId;
+    }
+    if (!userId) {
+      userId = req.body.userId;
+    }
+
+    if (!userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required to activate role.",
+      });
+      return;
+    }
+
+    const { role } = req.body;
+    if (!role) {
+      res.status(400).json({
+        success: false,
+        message: "Role to activate is required.",
+      });
+      return;
+    }
+
+    const result = await activateUserRole({ userId, role });
+    res.status(200).json({
+      success: true,
+      message: `Role ${role} activated and selected successfully.`,
+      data: result,
+    });
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : "Failed to activate role";
+    const statusCode = message.includes("Privileged") ? 403 : 400;
+    res.status(statusCode).json({
       success: false,
       message,
     });

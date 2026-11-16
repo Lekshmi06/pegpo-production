@@ -23,6 +23,9 @@ export interface CreateCourseInput {
   language?: string;
   price?: number;
   currency?: string;
+  allowInstalments?: boolean;
+  maxInstalments?: number;
+  instalmentFrequencyDays?: number;
 }
 
 export interface UpdateCourseInput {
@@ -36,6 +39,9 @@ export interface UpdateCourseInput {
   price?: number;
   currency?: string;
   status?: CourseStatus;
+  allowInstalments?: boolean;
+  maxInstalments?: number;
+  instalmentFrequencyDays?: number;
 }
 
 export interface CourseFilterQuery {
@@ -73,6 +79,9 @@ export const createCourse = async (
     language: input.language?.trim() || "English",
     price: Number(input.price) || 0,
     currency: input.currency || "USD",
+    allowInstalments: Boolean(input.allowInstalments),
+    maxInstalments: input.maxInstalments ? Math.min(12, Math.max(2, input.maxInstalments)) : 3,
+    instalmentFrequencyDays: input.instalmentFrequencyDays ? Math.max(7, input.instalmentFrequencyDays) : 30,
     status: "draft",
     sections: [],
     totalLessons: 0,
@@ -170,6 +179,10 @@ export const updateCourse = async (
   if (input.language !== undefined) course.language = input.language.trim();
   if (input.price !== undefined) course.price = Math.max(0, Number(input.price));
   if (input.currency !== undefined) course.currency = input.currency.trim();
+  if (input.allowInstalments !== undefined) course.allowInstalments = Boolean(input.allowInstalments);
+  if (input.maxInstalments !== undefined) course.maxInstalments = Math.min(12, Math.max(2, input.maxInstalments));
+  if (input.instalmentFrequencyDays !== undefined)
+    course.instalmentFrequencyDays = Math.max(7, input.instalmentFrequencyDays);
   if (input.status !== undefined && ["draft", "published", "archived"].includes(input.status)) {
     course.status = input.status;
   }
@@ -244,7 +257,8 @@ export const addCourseSection = async (
   courseId: string,
   providerId: string,
   title: string,
-  description?: string
+  description?: string,
+  requiredInstalmentNumber?: number
 ): Promise<ICourse> => {
   if (!mongoose.Types.ObjectId.isValid(courseId)) {
     throw new Error("Invalid course ID");
@@ -267,6 +281,7 @@ export const addCourseSection = async (
     title: title.trim(),
     description: description?.trim(),
     order: course.sections.length,
+    requiredInstalmentNumber: requiredInstalmentNumber ? Math.max(1, requiredInstalmentNumber) : 1,
     lessons: [],
   };
 
@@ -280,7 +295,8 @@ export const updateCourseSection = async (
   providerId: string,
   sectionId: string,
   title?: string,
-  description?: string
+  description?: string,
+  requiredInstalmentNumber?: number
 ): Promise<ICourse> => {
   const course = await Course.findById(courseId);
   if (!course) {
@@ -298,6 +314,8 @@ export const updateCourseSection = async (
 
   if (title !== undefined && title.trim()) section.title = title.trim();
   if (description !== undefined) section.description = description.trim();
+  if (requiredInstalmentNumber !== undefined)
+    section.requiredInstalmentNumber = Math.max(1, Number(requiredInstalmentNumber));
 
   await course.save();
   return course;

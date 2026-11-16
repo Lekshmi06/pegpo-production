@@ -190,8 +190,14 @@ export const addCourseSectionController = async (req: Request, res: Response): P
     }
 
     const id = getParam(req.params.id);
-    const { title, description } = req.body;
-    const course = await addCourseSection(id, user._id.toString(), title, description);
+    const { title, description, requiredInstalmentNumber } = req.body;
+    const course = await addCourseSection(
+      id,
+      user._id.toString(),
+      title,
+      description,
+      requiredInstalmentNumber
+    );
     res.status(201).json({
       success: true,
       message: "Section added successfully",
@@ -216,8 +222,15 @@ export const updateCourseSectionController = async (req: Request, res: Response)
 
     const id = getParam(req.params.id);
     const sectionId = getParam(req.params.sectionId);
-    const { title, description } = req.body;
-    const course = await updateCourseSection(id, user._id.toString(), sectionId, title, description);
+    const { title, description, requiredInstalmentNumber } = req.body;
+    const course = await updateCourseSection(
+      id,
+      user._id.toString(),
+      sectionId,
+      title,
+      description,
+      requiredInstalmentNumber
+    );
     res.status(200).json({
       success: true,
       message: "Section updated successfully",

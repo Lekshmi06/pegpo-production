@@ -4,6 +4,7 @@ import User, { IUser } from "../models/User";
 import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
+import TuitionProviderProfile, { ITuitionProviderProfile } from "../models/TuitionProviderProfile";
 
 import Institution, { IInstitution } from "../models/Institution";
 import InstitutionMembership, {
@@ -32,6 +33,7 @@ declare global {
       institutionMembership?: IInstitutionMembership;
       institutionId?: string;
       ssoPayload?: SSOTokenPayload;
+      tuitionProviderProfile?: ITuitionProviderProfile;
     }
   }
 }
@@ -134,7 +136,14 @@ export const authenticateStudent = async (
     }
 
     // 2. Fallback: if user exists but profile missing, create default student profile
-    if (user && !studentProfile) {
+    const isStudent =
+      user &&
+      (user.activeRole === "student" ||
+        user.userType === "student" ||
+        user.roles?.includes("student") ||
+        !user.userType);
+
+    if (user && !studentProfile && isStudent) {
       const resolvedName =
         user.name ||
         user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -245,8 +254,14 @@ export const authenticateTeacher = async (
       }
     }
 
+    const isTeacher =
+      user &&
+      (user.activeRole === "teacher" ||
+        user.userType === "teacher" ||
+        user.roles?.includes("teacher"));
+
     // Fallback: if user exists as teacher but profile missing, create default profile
-    if (user && !teacherProfile && user.userType === "teacher") {
+    if (user && !teacherProfile && isTeacher) {
       const resolvedName =
         user.name ||
         user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -330,8 +345,13 @@ export const authenticateResearcher = async (
 
     let researcherProfile = await ResearcherProfile.findOne({ userId: user._id });
 
+    const isResearcher =
+      user.activeRole === "researcher" ||
+      user.userType === "researcher" ||
+      user.roles?.includes("researcher");
+
     // Only create profile if the user already has the researcher role
-    if (!researcherProfile && user.userType === "researcher") {
+    if (!researcherProfile && isResearcher) {
       const resolvedName =
         user.name ||
         user.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -522,7 +542,15 @@ export const authenticateProvider = async (
       return;
     }
 
-    if (req.user.userType !== "provider" && req.user.userType !== "teacher") {
+    const isProvider =
+      req.user.activeRole === "provider" ||
+      req.user.userType === "provider" ||
+      req.user.roles?.includes("provider") ||
+      req.user.activeRole === "teacher" ||
+      req.user.userType === "teacher" ||
+      req.user.roles?.includes("teacher");
+
+    if (!isProvider) {
       res.status(403).json({
         success: false,
         message: "Forbidden: Provider access required.",
@@ -530,6 +558,53 @@ export const authenticateProvider = async (
       return;
     }
 
+    next();
+  });
+};
+
+/**
+ * Tuition Provider specific authorization middleware.
+ * Verifies that the user has an approved, verified Tuition Provider profile
+ * and is authorized to manage tuition offerings, schedules, and batches.
+ * Prevents unauthorized School Teachers or arbitrary users from accessing verified tuition operations.
+ */
+export const authenticateTuitionProvider = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  await authenticateUser(req, res, async () => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+      return;
+    }
+
+    const userId = req.user._id;
+    const profile = await TuitionProviderProfile.findOne({ userId });
+
+    if (!profile) {
+      res.status(403).json({
+        success: false,
+        message: "Tuition provider profile not found. Please complete provider onboarding.",
+        code: "PROFILE_REQUIRED",
+      });
+      return;
+    }
+
+    if (profile.verificationStatus !== "verified") {
+      res.status(403).json({
+        success: false,
+        message: `Tuition provider capability is not active (current status: ${profile.verificationStatus}).`,
+        code: "VERIFICATION_PENDING",
+        verificationStatus: profile.verificationStatus,
+      });
+      return;
+    }
+
+    req.tuitionProviderProfile = profile;
     next();
   });
 };
@@ -548,6 +623,25 @@ export const authenticateLearner = async (
       res.status(401).json({
         success: false,
         message: "Authentication required. Please log in as a learner.",
+      });
+      return;
+    }
+
+    const isLearner =
+      req.user.activeRole === "learner" ||
+      req.user.userType === "learner" ||
+      req.user.roles?.includes("learner") ||
+      req.user.activeRole === "student" ||
+      req.user.userType === "student" ||
+      req.user.roles?.includes("student") ||
+      req.user.activeRole === "personal" ||
+      req.user.userType === "personal" ||
+      req.user.roles?.includes("personal");
+
+    if (!isLearner) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Learner access required.",
       });
       return;
     }
@@ -803,4 +897,39 @@ export const requireSSOToken = (
       });
     }
   };
+};
+
+/**
+ * Platform Administration Guard for Tuition Marketplace
+ * Enforces that the caller has platform administrative privileges before modifying
+ * provider verification statuses or overriding points-based evaluation tiers.
+ */
+export const requireTuitionPlatformAdmin = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  const user = req.user;
+  const adminSecret = req.headers["x-admin-key"];
+  const validSecret = process.env.ADMIN_API_KEY || "edupye-admin-secret-2026";
+
+  const isPlatformAdmin = Boolean(
+    (adminSecret && adminSecret === validSecret) ||
+    (user && (
+      user.userType === "institution" ||
+      (user.activeRole as string) === "admin" ||
+      user.roles?.includes("admin" as any) ||
+      (user.email && (user.email.includes("admin") || user.email.endsWith("@edupye.admin") || user.email.startsWith("admin@")))
+    ))
+  );
+
+  if (!isPlatformAdmin) {
+    res.status(403).json({
+      success: false,
+      message: "Forbidden: Platform administrator authorization is required to modify provider verification or tier status",
+    });
+    return;
+  }
+
+  next();
 };

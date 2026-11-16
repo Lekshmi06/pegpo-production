@@ -5,6 +5,8 @@ export interface TokenPayload {
   userId: string;
   email?: string;
   role?: string;
+  activeRole?: string;
+  roles?: string[];
   iat?: number;
   exp?: number;
 }
@@ -26,14 +28,28 @@ const DEFAULT_EXPIRY = "7d"; // 7 days
  * Signs a cryptographic JWT session token containing user claims.
  */
 export function generateSessionToken(
-  user: { _id: string | mongoose.Types.ObjectId; email?: string; userType?: string },
+  user: {
+    _id: string | mongoose.Types.ObjectId;
+    email?: string;
+    userType?: string;
+    activeRole?: string;
+    roles?: string[];
+  },
   expiresIn = DEFAULT_EXPIRY
 ): string {
   const secret = getJwtSecret();
+  const currentActiveRole = user.activeRole || user.userType || "student";
+  const currentRoles =
+    user.roles && Array.isArray(user.roles) && user.roles.length > 0
+      ? user.roles
+      : [currentActiveRole];
+
   const payload: TokenPayload = {
     userId: user._id.toString(),
     email: user.email,
-    role: user.userType,
+    role: currentActiveRole,
+    activeRole: currentActiveRole,
+    roles: currentRoles,
   };
 
   const options: jwt.SignOptions = {
