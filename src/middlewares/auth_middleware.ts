@@ -916,6 +916,12 @@ export const requireTuitionPlatformAdmin = async (
   const isPlatformAdmin = Boolean(
     (adminSecret && adminSecret === validSecret) ||
     (user && (
+      user.adminRole === "Super Admin" ||
+      user.role === "Super Admin" ||
+      user.adminRole === "Tuition Operations Admin" ||
+      user.role === "Tuition Operations Admin" ||
+      user.adminRole === "Admin" ||
+      user.role === "Admin" ||
       user.userType === "institution" ||
       (user.activeRole as string) === "admin" ||
       user.roles?.includes("admin" as any) ||

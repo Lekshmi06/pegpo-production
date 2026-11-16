@@ -44,11 +44,24 @@ export function formatUserResponse(user: IUser) {
       : [activeRole];
   return {
     _id: (user._id as any).toString(),
+    id: user.id || (user._id as any).toString(),
+    userId: user.userId || `USR-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+    username: user.username,
+    displayName: user.displayName || user.fullName || user.name || "User",
+    fullName: user.fullName || user.name,
     email: user.email,
-    name: user.name,
+    name: user.name || user.displayName,
     userType: activeRole,
     activeRole,
+    role: user.adminRole || user.role || activeRole,
+    adminRole: user.adminRole,
+    allowedModules: user.allowedModules,
+    department: user.department,
+    status: user.status || "Active",
+    avatarUrl: user.avatarUrl,
     roles,
+    studentCode: user.studentCode,
+    teacherCode: user.teacherCode,
     language: user.language || "English",
   };
 }
@@ -372,11 +385,29 @@ export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => 
     resolvedId = decoded.userId;
   }
 
-  if (!mongoose.Types.ObjectId.isValid(resolvedId)) {
-    throw new Error("Invalid session token or user ID");
+  let user: IUser | null = null;
+  if (mongoose.Types.ObjectId.isValid(resolvedId)) {
+    user = await User.findById(resolvedId);
   }
 
-  const user = await User.findById(resolvedId);
+  if (!user && (decoded as any)?._id && mongoose.Types.ObjectId.isValid((decoded as any)._id)) {
+    user = await User.findById((decoded as any)._id);
+  }
+
+  if (!user && (decoded as any)?.username) {
+    user = await User.findOne({ username: (decoded as any).username });
+  }
+
+  if (!user && (decoded as any)?.email) {
+    user = await User.findOne({ email: (decoded as any).email });
+  }
+
+  if (!user) {
+    user = await User.findOne({
+      $or: [{ userId: resolvedId }, { username: resolvedId }],
+    });
+  }
+
   if (!user) {
     throw new Error("User not found");
   }

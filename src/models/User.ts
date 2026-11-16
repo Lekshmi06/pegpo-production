@@ -22,6 +22,35 @@ export interface IUserExternalIdentity {
 }
 
 export interface IUser extends Document {
+  id?: number;
+  userId?: string;
+  username?: string;
+  displayName?: string;
+  fullName?: string;
+  phone?: string;
+  entityType?: "company" | "institution" | "startup" | null;
+  provider?: string;
+  emailVerified?: boolean;
+  isEmailVerified?: boolean;
+  phoneVerified?: boolean;
+  avatarUrl?: string;
+  role?: string;
+  adminRole?: "Super Admin" | "Admin" | "Tuition Operations Admin" | "Staff" | string;
+  allowedModules?: number[];
+  department?: string;
+  designation?: string;
+  passwordHash?: string;
+  lockoutReason?: string;
+  createdBy?: mongoose.Types.ObjectId | string | null;
+  createdById?: number | null;
+  createdByName?: string;
+  createdByRole?: string;
+  assignedAdminId?: string | null;
+  tokenVersion?: number;
+  failedLoginAttempts?: number;
+  lockoutUntil?: Date | null;
+  lastLogin?: Date | null;
+  lastLoginIp?: string | null;
   email: string;
   password?: string;
   name?: string;
@@ -31,7 +60,7 @@ export interface IUser extends Document {
   studentCode?: string; // Permanent student code, e.g. STU-A1B2C3
   teacherCode?: string; // Permanent teacher code, e.g. TCH-D4E5F6
   language?: string;
-  status?: "active" | "suspended" | "deactivated";
+  status?: string;
   isSuspended?: boolean;
   externalIdentity?: IUserExternalIdentity;
   createdAt: Date;
@@ -137,9 +166,43 @@ const userSchema = new Schema<IUser>(
 
     status: {
       type: String,
-      enum: ["active", "suspended", "deactivated"],
-      default: "active",
+      default: "Active",
     },
+
+    // Unified Admin / ERP Fields
+    id: { type: Number, unique: true, sparse: true, index: true },
+    userId: { type: String, unique: true, sparse: true, trim: true, index: true },
+    username: { type: String, unique: true, sparse: true, trim: true, lowercase: true, index: true },
+    displayName: { type: String, trim: true },
+    fullName: { type: String, default: null, trim: true },
+    phone: { type: String, default: null, trim: true },
+    entityType: { type: String, enum: ["company", "institution", "startup", null], default: null },
+    provider: { type: String, default: "email" },
+    emailVerified: { type: Boolean, default: false },
+    isEmailVerified: { type: Boolean, default: false },
+    phoneVerified: { type: Boolean, default: false },
+    avatarUrl: { type: String, default: null },
+    role: { type: String, trim: true, default: "user" },
+    adminRole: {
+      type: String,
+      enum: ["Super Admin", "Admin", "Tuition Operations Admin", "Staff", null],
+      default: null,
+    },
+    allowedModules: { type: [Number], default: undefined },
+    department: { type: String, default: "General" },
+    designation: { type: String, default: null },
+    passwordHash: { type: String, default: null },
+    lockoutReason: { type: String, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    createdById: { type: Number, default: null },
+    createdByName: { type: String, default: "System" },
+    createdByRole: { type: String, default: "System" },
+    assignedAdminId: { type: String, default: null },
+    tokenVersion: { type: Number, default: 0 },
+    failedLoginAttempts: { type: Number, default: 0 },
+    lockoutUntil: { type: Date, default: null },
+    lastLogin: { type: Date, default: null },
+    lastLoginIp: { type: String, default: null },
 
     isSuspended: {
       type: Boolean,

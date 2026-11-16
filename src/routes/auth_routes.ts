@@ -2,6 +2,10 @@ import { Router } from "express";
 import {
   registerController,
   loginController,
+  loginSuperAdminController,
+  loginAdminController,
+  loginTuitionAdminController,
+  logoutController,
   meController,
   selectRoleController,
   switchRoleController,
@@ -16,6 +20,10 @@ const router = Router();
 
 router.post("/register", registerController);
 router.post("/login", loginController);
+router.post("/super-admin/login", loginSuperAdminController);
+router.post("/admin/login", loginAdminController);
+router.post("/tuition-admin/login", loginTuitionAdminController);
+router.post("/logout", logoutController);
 router.post("/google", googleAuthController);
 router.post("/mock-google", mockGoogleAuthController);
 router.get("/mock-accounts", getMockAccountsController);

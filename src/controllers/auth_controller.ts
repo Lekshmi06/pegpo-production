@@ -1,4 +1,13 @@
 import { Request, Response } from "express";
+import bcrypt from "bcryptjs";
+import User, { IUser } from "../models/User";
+import {
+  isSuperAdmin,
+  isAdmin,
+  isStaff,
+  isTuitionOperationsAdmin,
+  generateToken,
+} from "../middlewares/admin_module_middleware";
 import {
   registerUser,
   loginUser,
@@ -9,6 +18,7 @@ import {
   authenticateWithGoogle,
   authenticateMockGoogle,
   PREDEFINED_MOCK_GOOGLE_ACCOUNTS,
+  formatUserResponse,
 } from "../services/auth_service";
 import { verifySessionToken } from "../utils/token";
 
@@ -51,10 +61,150 @@ export const loginController = async (
   res: Response
 ): Promise<void> => {
   try {
+    const { username, email, password, selectedRole } = req.body;
+    const identifier = (username || email || "").trim().toLowerCase();
+
+    // If identifier or selectedRole is provided and looks like an Admin/ERP login or unified login
+    if (username || selectedRole) {
+      if (!identifier || !password) {
+        res.status(400).json({
+          success: false,
+          message: "Both User ID/Username and Password are required.",
+        });
+        return;
+      }
+
+      const user = await User.findOne({
+        $or: [
+          { username: identifier },
+          { email: identifier },
+          { userId: { $regex: new RegExp(`^${identifier}$`, "i") } },
+        ],
+      });
+
+      if (!user) {
+        res.status(401).json({
+          success: false,
+          message: "Invalid User ID / Username or Password.",
+        });
+        return;
+      }
+
+      const userPasswordHash = user.passwordHash || user.password;
+      if (!userPasswordHash) {
+        res.status(401).json({
+          success: false,
+          message: "Account password has not been configured. Please contact an administrator.",
+        });
+        return;
+      }
+
+      const isPasswordMatch = await bcrypt.compare(password, userPasswordHash);
+      if (!isPasswordMatch) {
+        user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+        await user.save();
+        res.status(401).json({
+          success: false,
+          message: "Invalid User ID / Username or Password.",
+        });
+        return;
+      }
+
+      if (user.status === "Locked") {
+        res.status(403).json({
+          success: false,
+          message: `Account is locked. ${user.lockoutReason || "Please contact security administration."}`,
+        });
+        return;
+      }
+
+      if (user.status === "Inactive") {
+        res.status(403).json({
+          success: false,
+          message: "Account is deactivated. Please contact security administration.",
+        });
+        return;
+      }
+
+      const userEffectiveRole = user.adminRole || user.role || user.activeRole;
+
+      if (selectedRole) {
+        const normSelected = selectedRole.trim().toLowerCase();
+        if (normSelected === "super admin" || normSelected.includes("super")) {
+          if (!isSuperAdmin(userEffectiveRole)) {
+            res.status(403).json({
+              success: false,
+              message: `Role mismatch: This account does not have Super Admin privileges.`,
+            });
+            return;
+          }
+        } else if (normSelected === "admin") {
+          if (!isAdmin(userEffectiveRole) && !isSuperAdmin(userEffectiveRole)) {
+            res.status(403).json({
+              success: false,
+              message: `Role mismatch: This account does not have Admin privileges.`,
+            });
+            return;
+          }
+        } else if (normSelected === "tuition operations admin" || normSelected.includes("tuition")) {
+          if (!isTuitionOperationsAdmin(userEffectiveRole) && !isSuperAdmin(userEffectiveRole)) {
+            res.status(403).json({
+              success: false,
+              message: `Role mismatch: This account does not have Tuition Operations Admin privileges.`,
+            });
+            return;
+          }
+        } else if (normSelected === "staff") {
+          if (!isStaff(userEffectiveRole) && !isSuperAdmin(userEffectiveRole)) {
+            res.status(403).json({
+              success: false,
+              message: `Role mismatch: This account does not have Staff privileges.`,
+            });
+            return;
+          }
+        }
+      }
+
+      user.lastLogin = new Date();
+      user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
+      user.failedLoginAttempts = 0;
+      await user.save();
+
+      const token = generateToken(user);
+      const authUser = {
+        id: user.id || user._id,
+        userId: user.userId || `USR-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        username: user.username || user.email.split("@")[0],
+        displayName: user.displayName || user.fullName || user.name || "User",
+        email: user.email,
+        role: user.adminRole || user.role || "Staff",
+        adminRole: user.adminRole,
+        allowedModules: user.allowedModules,
+        department: user.department || "Operations",
+        status: user.status || "Active",
+        avatarUrl: user.avatarUrl,
+      };
+
+      res.json({
+        success: true,
+        message: `${userEffectiveRole} authenticated successfully.`,
+        token,
+        user: authUser,
+        data: {
+          user: formatUserResponse(user),
+          token,
+        },
+      });
+      return;
+    }
+
+    // Default EduPye student/teacher/researcher authentication flow
     const result = await loginUser(req.body);
     res.status(200).json({
       success: true,
       message: "Login successful",
+      token: result.token,
+      user: result.user,
       data: result,
     });
   } catch (error) {
@@ -67,6 +217,334 @@ export const loginController = async (
       message,
     });
   }
+};
+
+/**
+ * Super Admin Login Endpoint
+ * Route: POST /api/auth/super-admin/login
+ */
+export const loginSuperAdminController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      res.status(400).json({
+        success: false,
+        message: "Both User ID/Username and Password are required.",
+      });
+      return;
+    }
+
+    const cleanIdentifier = username.trim().toLowerCase();
+    const user = await User.findOne({
+      $or: [
+        { username: cleanIdentifier },
+        { email: cleanIdentifier },
+        { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
+      ],
+    });
+
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid User ID/Username or Password.",
+      });
+      return;
+    }
+
+    const userPasswordHash = user.passwordHash || user.password;
+    if (!userPasswordHash) {
+      res.status(401).json({
+        success: false,
+        message: "Account password has not been initialized. Please contact system administrator.",
+      });
+      return;
+    }
+
+    const isPasswordMatch = await bcrypt.compare(password, userPasswordHash);
+    if (!isPasswordMatch) {
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      await user.save();
+      res.status(401).json({
+        success: false,
+        message: "Invalid User ID/Username or Password.",
+      });
+      return;
+    }
+
+    if (user.status === "Locked") {
+      res.status(403).json({
+        success: false,
+        message: `Account is locked. ${user.lockoutReason || "Please contact security administration."}`,
+      });
+      return;
+    }
+
+    if (user.status === "Inactive") {
+      res.status(403).json({
+        success: false,
+        message: "Account is deactivated. Please contact security administration.",
+      });
+      return;
+    }
+
+    const userRole = user.adminRole || user.role;
+    if (!isSuperAdmin(userRole)) {
+      res.status(403).json({
+        success: false,
+        message: "Access Denied: Only authorized Super Administrators can log in through this portal.",
+      });
+      return;
+    }
+
+    user.lastLogin = new Date();
+    user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
+    user.failedLoginAttempts = 0;
+    await user.save();
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      message: "Super Admin authenticated successfully.",
+      token,
+      user: {
+        id: user.id || user._id,
+        userId: user.userId || `SA-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        username: user.username,
+        displayName: user.displayName || user.fullName || user.name || "Super Admin",
+        email: user.email,
+        role: "Super Admin",
+        adminRole: "Super Admin",
+        allowedModules: user.allowedModules,
+        department: user.department || "Executive",
+        status: user.status || "Active",
+        avatarUrl: user.avatarUrl,
+      },
+    });
+  } catch (err: any) {
+    console.error("Super Admin Login Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during authentication.",
+    });
+  }
+};
+
+/**
+ * Admin Login Endpoint
+ * Route: POST /api/auth/admin/login
+ */
+export const loginAdminController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      res.status(400).json({
+        success: false,
+        message: "Both Admin/Staff ID and Password are required.",
+      });
+      return;
+    }
+
+    const cleanIdentifier = username.trim().toLowerCase();
+    const user = await User.findOne({
+      $or: [
+        { username: cleanIdentifier },
+        { email: cleanIdentifier },
+        { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
+      ],
+    });
+
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid Admin ID or Password.",
+      });
+      return;
+    }
+
+    const userPasswordHash = user.passwordHash || user.password;
+    if (!userPasswordHash) {
+      res.status(401).json({
+        success: false,
+        message: "Account password has not been configured. Please contact administrator.",
+      });
+      return;
+    }
+
+    const isPasswordMatch = await bcrypt.compare(password, userPasswordHash);
+    if (!isPasswordMatch) {
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      await user.save();
+      res.status(401).json({
+        success: false,
+        message: "Invalid Admin ID or Password.",
+      });
+      return;
+    }
+
+    if (user.status === "Locked") {
+      res.status(403).json({
+        success: false,
+        message: `Account is locked. ${user.lockoutReason || "Please contact administrator."}`,
+      });
+      return;
+    }
+
+    if (user.status === "Inactive") {
+      res.status(403).json({
+        success: false,
+        message: "Account has been deactivated. Please contact administrator.",
+      });
+      return;
+    }
+
+    user.lastLogin = new Date();
+    user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
+    user.failedLoginAttempts = 0;
+    await user.save();
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      message: "Authenticated successfully.",
+      token,
+      user: {
+        id: user.id || user._id,
+        userId: user.userId || `USR-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        username: user.username,
+        displayName: user.displayName || user.fullName || user.name || "User",
+        email: user.email,
+        role: user.adminRole || user.role || "Staff",
+        adminRole: user.adminRole,
+        allowedModules: user.allowedModules,
+        department: user.department || "Operations",
+        status: user.status || "Active",
+        avatarUrl: user.avatarUrl,
+      },
+    });
+  } catch (err: any) {
+    console.error("Admin Login Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during authentication.",
+    });
+  }
+};
+
+/**
+ * Tuition Operations Admin Login Endpoint
+ * Route: POST /api/auth/tuition-admin/login
+ */
+export const loginTuitionAdminController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      res.status(400).json({
+        success: false,
+        message: "Both Tuition Admin ID and Password are required.",
+      });
+      return;
+    }
+
+    const cleanIdentifier = username.trim().toLowerCase();
+    const user = await User.findOne({
+      $or: [
+        { username: cleanIdentifier },
+        { email: cleanIdentifier },
+        { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
+      ],
+    });
+
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid Tuition Admin ID or Password.",
+      });
+      return;
+    }
+
+    const userPasswordHash = user.passwordHash || user.password;
+    if (!userPasswordHash) {
+      res.status(401).json({
+        success: false,
+        message: "Account password has not been configured.",
+      });
+      return;
+    }
+
+    const isPasswordMatch = await bcrypt.compare(password, userPasswordHash);
+    if (!isPasswordMatch) {
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      await user.save();
+      res.status(401).json({
+        success: false,
+        message: "Invalid Tuition Admin ID or Password.",
+      });
+      return;
+    }
+
+    const userRole = user.adminRole || user.role;
+    if (!isTuitionOperationsAdmin(userRole) && !isSuperAdmin(userRole)) {
+      res.status(403).json({
+        success: false,
+        message: "Access Denied: Only Tuition Operations Administrators can log in through this portal.",
+      });
+      return;
+    }
+
+    user.lastLogin = new Date();
+    user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
+    user.failedLoginAttempts = 0;
+    await user.save();
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      message: "Tuition Operations Admin authenticated successfully.",
+      token,
+      user: {
+        id: user.id || user._id,
+        userId: user.userId || `TAD-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        username: user.username,
+        displayName: user.displayName || user.fullName || user.name || "Tuition Admin",
+        email: user.email,
+        role: "Tuition Operations Admin",
+        adminRole: "Tuition Operations Admin",
+        allowedModules: user.allowedModules || [1, 2, 3, 4, 5, 33],
+        department: user.department || "Tuition Operations",
+        status: user.status || "Active",
+        avatarUrl: user.avatarUrl,
+      },
+    });
+  } catch (err: any) {
+    console.error("Tuition Admin Login Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during authentication.",
+    });
+  }
+};
+
+/**
+ * Logout Endpoint
+ * Route: POST /api/auth/logout
+ */
+export const logoutController = async (
+  _req: Request,
+  res: Response
+): Promise<void> => {
+  res.json({
+    success: true,
+    message: "Logged out successfully.",
+  });
 };
 
 export const meController = async (
@@ -91,6 +569,7 @@ export const meController = async (
     const result = await getCurrentUser(token);
     res.status(200).json({
       success: true,
+      user: result.user,
       data: result,
     });
   } catch (error) {
