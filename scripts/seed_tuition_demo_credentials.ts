@@ -9,6 +9,8 @@ import TuitionBatch from "../src/models/TuitionBatch";
 import TuitionEnrollment from "../src/models/TuitionEnrollment";
 import TuitionSession from "../src/models/TuitionSession";
 import LiveClassSession from "../src/models/LiveClassSession";
+import TuitionProgram from "../src/models/TuitionProgram";
+import CombinedStudyMessage from "../src/models/CombinedStudyMessage";
 import { hashPassword } from "../src/utils/password";
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -49,6 +51,9 @@ async function seedTuitionDemoCredentials() {
     providerUser.roles = ["tuition_provider", "teacher"];
     providerUser.activeRole = "tuition_provider";
     providerUser.status = "active";
+  }
+  if (!providerUser.teacherCode) {
+    providerUser.teacherCode = "TCH-PHY999";
   }
   await providerUser.save();
   console.log(`✓ Tuition Provider user ready: ${providerEmail}`);
@@ -171,6 +176,9 @@ async function seedTuitionDemoCredentials() {
     studentUser.roles = ["student"];
     studentUser.activeRole = "student";
     studentUser.status = "active";
+  }
+  if (!studentUser.studentCode) {
+    studentUser.studentCode = "STU-PHY101";
   }
   await studentUser.save();
   console.log(`✓ Tuition Student user ready: ${studentEmail}`);
@@ -304,24 +312,78 @@ async function seedTuitionDemoCredentials() {
     await tuitionSession.save();
   }
 
+  // --------------------------------------------------------------------------
+  // 5. TUITION PROGRAM (Phase B Scheduled Batch / Course)
+  // --------------------------------------------------------------------------
+  let tuitionProgram = await TuitionProgram.findOne({ code: "PRG-PHY12-DEMO" });
+  if (!tuitionProgram) {
+    tuitionProgram = new TuitionProgram({
+      title: "Class 12 Elite JEE Physics Program",
+      code: "PRG-PHY12-DEMO",
+      subject: "Physics",
+      grade: "Class 12",
+      description: "Structured curriculum covering Rotational Kinematics, Modern Physics, and Problem-Solving Masterclasses.",
+      schedule: [
+        { day: "Monday", startTime: "18:00", endTime: "19:30" },
+        { day: "Wednesday", startTime: "18:00", endTime: "19:30" },
+        { day: "Friday", startTime: "18:00", endTime: "19:30" },
+      ],
+      teacherIds: [providerUser._id],
+      enrolledStudentIds: [studentUser._id],
+      status: "active",
+      startDate: new Date(),
+    });
+    await tuitionProgram.save();
+    console.log("✓ Tuition Program ready: PRG-PHY12-DEMO");
+  } else {
+    tuitionProgram.teacherIds = [providerUser._id];
+    if (!tuitionProgram.enrolledStudentIds.some((id) => id.toString() === studentUser._id.toString())) {
+      tuitionProgram.enrolledStudentIds.push(studentUser._id);
+    }
+    await tuitionProgram.save();
+  }
+
+  // --------------------------------------------------------------------------
+  // 6. INITIAL COMBINED STUDY STREAM MESSAGES (1-Year Retained)
+  // --------------------------------------------------------------------------
+  let initialMsg = await CombinedStudyMessage.findOne({ programId: tuitionProgram._id });
+  if (!initialMsg) {
+    initialMsg = new CombinedStudyMessage({
+      programId: tuitionProgram._id,
+      senderId: providerUser._id,
+      senderRole: "teacher",
+      senderName: providerUser.name,
+      messageType: "text",
+      content: "Welcome to the Class 12 Elite JEE Physics Combined Study room! Feel free to ask questions and share study materials here.",
+      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    });
+    await initialMsg.save();
+    console.log("✓ Combined Study Stream initial message seeded.");
+  }
+
   console.log("\n==========================================================================");
-  console.log("  DEMO TUITION CREDENTIALS READY");
+  console.log("  DEMO TUITION CREDENTIALS & PROGRAM SEED COMPLETE");
   console.log("==========================================================================");
-  console.log("1. TUITION PROVIDER (Teacher / Host):");
-  console.log(`   Email:    ${providerEmail}`);
-  console.log(`   Password: ${standardPassword}`);
-  console.log(`   Name:     ${providerUser.name}`);
-  console.log(`   Role:     tuition_provider (Verified Diamond Tier)`);
-  console.log(`   Portal:   http://localhost:5173/tuition-provider/dashboard`);
-  console.log(`   Schedule: http://localhost:5173/tuition-provider/schedule`);
-  console.log("\n2. TUITION STUDENT (Enrolled Peer):");
-  console.log(`   Email:    ${studentEmail}`);
-  console.log(`   Password: ${standardPassword}`);
-  console.log(`   Name:     ${studentUser.name}`);
-  console.log(`   Role:     student`);
-  console.log(`   Portal:   http://localhost:5173/student/tuition`);
-  console.log(`   Live Hub: http://localhost:5173/student/live-classes`);
-  console.log("\n3. ACTIVE WEBRTC LIVE CLASSROOM SESSION:");
+  console.log("1. TUITION TEACHER / PROVIDER:");
+  console.log(`   Email:        ${providerEmail}`);
+  console.log(`   Password:     ${standardPassword}`);
+  console.log(`   Name:         ${providerUser.name}`);
+  console.log(`   Permanent Code: ${providerUser.teacherCode}`);
+  console.log(`   Role:         tuition_provider / teacher`);
+  console.log(`   Enrolled View: http://localhost:5173/teacher/enrolled-students`);
+  console.log("\n2. TUITION STUDENT:");
+  console.log(`   Email:        ${studentEmail}`);
+  console.log(`   Password:     ${standardPassword}`);
+  console.log(`   Name:         ${studentUser.name}`);
+  console.log(`   Permanent Code: ${studentUser.studentCode}`);
+  console.log(`   Role:         student`);
+  console.log(`   Tuition Hub:  http://localhost:5173/tuition-mode`);
+  console.log("\n3. DEMO TUITION PROGRAM:");
+  console.log(`   Title:        ${tuitionProgram.title}`);
+  console.log(`   Program Code: ${tuitionProgram.code}`);
+  console.log(`   Program ID:   ${tuitionProgram._id}`);
+  console.log(`   Workspace:    http://localhost:5173/tuition-mode/program/${tuitionProgram._id}`);
+  console.log("\n4. ACTIVE LIVE CLASSROOM SESSION:");
   console.log(`   Session ID:   ${liveClassSession._id}`);
   console.log(`   Classroom URL: http://localhost:5173/live/${liveClassSession._id}`);
   console.log("==========================================================================\n");
