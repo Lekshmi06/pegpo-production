@@ -254,25 +254,38 @@ export function generateTeacherCode(): string {
 // Method to issue permanent tuition code upon Admin approval or explicit grant
 userSchema.methods.issuePermanentTuitionCode = function (this: IUser): string {
   const isTeacher =
-    this.userType === "teacher" ||
-    this.userType === "tuition_provider" ||
     this.activeRole === "teacher" ||
     this.activeRole === "tuition_provider" ||
+    this.userType === "teacher" ||
+    this.userType === "tuition_provider" ||
     (Array.isArray(this.roles) && this.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
 
-  if (isTeacher) {
-    if (!this.teacherCode) {
-      this.teacherCode = generateTeacherCode();
-    }
-    this.tuitionApprovalStatus = "approved";
-    return this.teacherCode;
-  } else {
-    if (!this.studentCode) {
-      this.studentCode = generateStudentCode();
-    }
-    this.tuitionApprovalStatus = "approved";
-    return this.studentCode;
+  const isStudent =
+    this.activeRole === "student" ||
+    this.activeRole === "learner" ||
+    this.activeRole === "personal" ||
+    this.userType === "student" ||
+    this.userType === "learner" ||
+    this.userType === "personal" ||
+    (Array.isArray(this.roles) && this.roles.some((r) => ["student", "learner", "personal"].includes(r)));
+
+  // If user has teacher role/capability, ensure teacherCode is issued
+  if (isTeacher && !this.teacherCode) {
+    this.teacherCode = generateTeacherCode();
   }
+
+  // If user has student/learner/personal role/capability (or is not a teacher), ensure studentCode is issued
+  if ((isStudent || !isTeacher) && !this.studentCode) {
+    this.studentCode = generateStudentCode();
+  }
+
+  this.tuitionApprovalStatus = "approved";
+
+  // Return appropriate code for the current activeRole/userType
+  if (this.activeRole === "teacher" || this.activeRole === "tuition_provider" || (isTeacher && !isStudent)) {
+    return this.teacherCode || "";
+  }
+  return this.studentCode || this.teacherCode || "";
 };
 
 // Guarantee role synchronization and backward compatibility before saving

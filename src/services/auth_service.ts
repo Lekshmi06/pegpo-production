@@ -47,6 +47,13 @@ export function formatUserResponse(user: IUser) {
     user.roles && Array.isArray(user.roles) && user.roles.length > 0
       ? user.roles
       : [activeRole];
+
+  const isStudent =
+    activeRole === "student" ||
+    activeRole === "learner" ||
+    activeRole === "personal" ||
+    roles.some((r) => ["student", "learner", "personal"].includes(r));
+
   return {
     _id: (user._id as any).toString(),
     id: user.id || (user._id as any).toString(),
@@ -67,9 +74,39 @@ export function formatUserResponse(user: IUser) {
     roles,
     studentCode: user.studentCode,
     teacherCode: user.teacherCode,
-    tuitionApprovalStatus: user.tuitionApprovalStatus || (user.studentCode || user.teacherCode ? "approved" : "none"),
+    tuitionApprovalStatus:
+      user.tuitionApprovalStatus ||
+      (user.studentCode || user.teacherCode
+        ? "approved"
+        : isStudent && process.env.AUTO_APPROVE_TUITION_DEV === "true"
+        ? "approved"
+        : "none"),
     language: user.language || "English",
   };
+}
+
+export function shouldAutoEnrollInDev(user: IUser): boolean {
+  if (process.env.AUTO_APPROVE_TUITION_DEV !== "true") return false;
+  const isStudent =
+    user.activeRole === "student" ||
+    user.activeRole === "learner" ||
+    user.activeRole === "personal" ||
+    user.userType === "student" ||
+    user.userType === "learner" ||
+    user.userType === "personal" ||
+    (Array.isArray(user.roles) && user.roles.some((r) => ["student", "learner", "personal"].includes(r)));
+
+  const isTeacher =
+    user.activeRole === "teacher" ||
+    user.activeRole === "tuition_provider" ||
+    user.userType === "teacher" ||
+    user.userType === "tuition_provider" ||
+    (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+  if (isStudent && !user.studentCode) return true;
+  if (isTeacher && !user.teacherCode) return true;
+  if (!user.studentCode && !user.teacherCode) return true;
+  return false;
 }
 
 export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
@@ -99,18 +136,28 @@ export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
       }
 
       const isTeacher =
-        user.userType === "teacher" ||
-        user.userType === "tuition_provider" ||
         user.activeRole === "teacher" ||
         user.activeRole === "tuition_provider" ||
+        user.userType === "teacher" ||
+        user.userType === "tuition_provider" ||
         (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+      const isStudent =
+        user.activeRole === "student" ||
+        user.activeRole === "learner" ||
+        user.activeRole === "personal" ||
+        user.userType === "student" ||
+        user.userType === "learner" ||
+        user.userType === "personal" ||
+        (Array.isArray(user.roles) && user.roles.some((r) => ["student", "learner", "personal"].includes(r)));
 
       if (isTeacher) {
         if (!demoProgram.teacherIds.some((id: any) => id.toString() === (user._id as any).toString())) {
           demoProgram.teacherIds.push(user._id as any);
           await demoProgram.save();
         }
-      } else {
+      }
+      if (isStudent || !isTeacher) {
         if (!demoProgram.enrolledStudentIds.some((id: any) => id.toString() === (user._id as any).toString())) {
           demoProgram.enrolledStudentIds.push(user._id as any);
           await demoProgram.save();
@@ -341,7 +388,7 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
   }
 
   // Auto-approve tuition and issue permanent code in dev if not yet issued
-  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+  if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
   }
 
@@ -518,7 +565,7 @@ export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => 
   }
 
   // Auto-approve tuition and issue permanent code in dev if not yet issued
-  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+  if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
   }
 
@@ -1034,7 +1081,7 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
   }
 
   // Auto-approve tuition and issue permanent code in dev if not yet issued
-  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+  if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
   }
 
@@ -1303,7 +1350,7 @@ export const authenticateMockGoogle = async (
   }
 
   // Auto-approve tuition and issue permanent code in dev if not yet issued
-  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+  if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
   }
 

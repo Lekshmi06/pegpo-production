@@ -506,12 +506,30 @@ export async function requestProgramAccess(req: Request, res: Response): Promise
       return;
     }
 
-    if (user.tuitionApprovalStatus === "approved" && (user.studentCode || user.teacherCode)) {
+    const isTeacher =
+      user.activeRole === "teacher" ||
+      user.activeRole === "tuition_provider" ||
+      user.userType === "teacher" ||
+      user.userType === "tuition_provider" ||
+      (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+    const isStudent =
+      user.activeRole === "student" ||
+      user.activeRole === "learner" ||
+      user.activeRole === "personal" ||
+      user.userType === "student" ||
+      user.userType === "learner" ||
+      user.userType === "personal" ||
+      (Array.isArray(user.roles) && user.roles.some((r) => ["student", "learner", "personal"].includes(r)));
+
+    const hasAppropriateCode = isTeacher ? Boolean(user.teacherCode) : Boolean(user.studentCode);
+
+    if (user.tuitionApprovalStatus === "approved" && hasAppropriateCode) {
       res.status(200).json({
         success: true,
         message: "Tuition access is already approved and permanent code is active.",
         tuitionApprovalStatus: "approved",
-        code: user.studentCode || user.teacherCode,
+        code: isTeacher ? user.teacherCode : user.studentCode,
         user,
       });
       return;
@@ -543,19 +561,13 @@ export async function requestProgramAccess(req: Request, res: Response): Promise
           });
         }
 
-        const isTeacher =
-          user.userType === "teacher" ||
-          user.userType === "tuition_provider" ||
-          user.activeRole === "teacher" ||
-          user.activeRole === "tuition_provider" ||
-          (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
-
         if (isTeacher) {
           if (!demoProgram.teacherIds.some((id: any) => id.toString() === (user._id as any).toString())) {
             demoProgram.teacherIds.push(user._id as any);
             await demoProgram.save();
           }
-        } else {
+        }
+        if (isStudent || !isTeacher) {
           if (!demoProgram.enrolledStudentIds.some((id: any) => id.toString() === (user._id as any).toString())) {
             demoProgram.enrolledStudentIds.push(user._id as any);
             await demoProgram.save();
@@ -569,7 +581,7 @@ export async function requestProgramAccess(req: Request, res: Response): Promise
         success: true,
         message: "Tuition access auto-approved in dev mode.",
         tuitionApprovalStatus: "approved",
-        code,
+        code: isTeacher ? user.teacherCode : user.studentCode,
         user,
       });
       return;
