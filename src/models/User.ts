@@ -59,6 +59,8 @@ export interface IUser extends Document {
   activeRole: UserRole; // currently active workspace role
   studentCode?: string; // Permanent student code, e.g. STU-A1B2C3
   teacherCode?: string; // Permanent teacher code, e.g. TCH-D4E5F6
+  tuitionApprovalStatus?: "none" | "pending" | "approved" | "rejected";
+  issuePermanentTuitionCode(): string;
   language?: string;
   status?: string;
   isSuspended?: boolean;
@@ -158,6 +160,13 @@ const userSchema = new Schema<IUser>(
       index: true,
     },
 
+    tuitionApprovalStatus: {
+      type: String,
+      enum: ["none", "pending", "approved", "rejected"],
+      default: "none",
+      index: true,
+    },
+
     language: {
       type: String,
       trim: true,
@@ -242,7 +251,31 @@ export function generateTeacherCode(): string {
   return `TCH-${rand}`;
 }
 
-// Guarantee role synchronization, backward compatibility, and permanent code assignment before saving
+// Method to issue permanent tuition code upon Admin approval or explicit grant
+userSchema.methods.issuePermanentTuitionCode = function (this: IUser): string {
+  const isTeacher =
+    this.userType === "teacher" ||
+    this.userType === "tuition_provider" ||
+    this.activeRole === "teacher" ||
+    this.activeRole === "tuition_provider" ||
+    (Array.isArray(this.roles) && this.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+  if (isTeacher) {
+    if (!this.teacherCode) {
+      this.teacherCode = generateTeacherCode();
+    }
+    this.tuitionApprovalStatus = "approved";
+    return this.teacherCode;
+  } else {
+    if (!this.studentCode) {
+      this.studentCode = generateStudentCode();
+    }
+    this.tuitionApprovalStatus = "approved";
+    return this.studentCode;
+  }
+};
+
+// Guarantee role synchronization and backward compatibility before saving
 userSchema.pre("save", function (this: IUser) {
   if (!this.roles || !Array.isArray(this.roles) || this.roles.length === 0) {
     this.roles = [this.userType || "student"];
@@ -257,24 +290,13 @@ userSchema.pre("save", function (this: IUser) {
   // Keep legacy userType synchronized with activeRole
   this.userType = this.activeRole;
 
-  // Auto-generate permanent studentCode if user is a student and has no code
-  const isStudent =
-    this.userType === "student" ||
-    this.activeRole === "student" ||
-    (Array.isArray(this.roles) && this.roles.some((r) => ["student", "learner", "personal"].includes(r)));
-  if (isStudent && !this.studentCode) {
-    this.studentCode = generateStudentCode();
-  }
-
-  // Auto-generate permanent teacherCode if user is a teacher/tuition_provider and has no code
-  const isTeacher =
-    this.userType === "teacher" ||
-    this.userType === "tuition_provider" ||
-    this.activeRole === "teacher" ||
-    this.activeRole === "tuition_provider" ||
-    (Array.isArray(this.roles) && this.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
-  if (isTeacher && !this.teacherCode) {
-    this.teacherCode = generateTeacherCode();
+  // Existing users who already have codes remain 'approved'
+  if (this.studentCode || this.teacherCode) {
+    if (!this.tuitionApprovalStatus || this.tuitionApprovalStatus === "none") {
+      this.tuitionApprovalStatus = "approved";
+    }
+  } else if (!this.tuitionApprovalStatus) {
+    this.tuitionApprovalStatus = "none";
   }
 });
 

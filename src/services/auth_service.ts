@@ -4,6 +4,7 @@ import StudentProfile, { IStudentProfile } from "../models/StudentProfile";
 import TeacherProfile, { ITeacherProfile } from "../models/TeacherProfile";
 import ResearcherProfile, { IResearcherProfile } from "../models/ResearcherProfile";
 import TuitionProviderProfile from "../models/TuitionProviderProfile";
+import TuitionProgram from "../models/TuitionProgram";
 import Course from "../models/Course";
 import { hashPassword, verifyPassword, isLegacyPlaintext } from "../utils/password";
 import { generateSessionToken, verifySessionToken } from "../utils/token";
@@ -28,7 +29,11 @@ export interface AuthResult {
     userType: string;
     activeRole: string;
     roles: string[];
+    studentCode?: string;
+    teacherCode?: string;
+    tuitionApprovalStatus?: string;
     language?: string;
+    [key: string]: any;
   };
   studentProfile?: any;
   teacherProfile?: any;
@@ -62,8 +67,59 @@ export function formatUserResponse(user: IUser) {
     roles,
     studentCode: user.studentCode,
     teacherCode: user.teacherCode,
+    tuitionApprovalStatus: user.tuitionApprovalStatus || (user.studentCode || user.teacherCode ? "approved" : "none"),
     language: user.language || "English",
   };
+}
+
+export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
+  if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+    user.issuePermanentTuitionCode();
+    await user.save();
+
+    try {
+      let demoProgram = await TuitionProgram.findOne({ code: "PRG-PHY12-DEMO" });
+      if (!demoProgram) {
+        demoProgram = await TuitionProgram.create({
+          title: "Class 12 Physics - Mechanics & Electromagnetism",
+          code: "PRG-PHY12-DEMO",
+          subject: "Physics",
+          grade: "Class 12",
+          description: "Comprehensive Class 12 CBSE & competitive Physics tuition program covering mechanics, electrostatics, optics, and modern physics.",
+          schedule: [
+            { day: "Monday", startTime: "17:00", endTime: "18:30" },
+            { day: "Wednesday", startTime: "17:00", endTime: "18:30" },
+            { day: "Friday", startTime: "17:00", endTime: "18:30" },
+          ],
+          teacherIds: [],
+          enrolledStudentIds: [],
+          status: "active",
+          maxCapacity: 50,
+        });
+      }
+
+      const isTeacher =
+        user.userType === "teacher" ||
+        user.userType === "tuition_provider" ||
+        user.activeRole === "teacher" ||
+        user.activeRole === "tuition_provider" ||
+        (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+      if (isTeacher) {
+        if (!demoProgram.teacherIds.some((id: any) => id.toString() === (user._id as any).toString())) {
+          demoProgram.teacherIds.push(user._id as any);
+          await demoProgram.save();
+        }
+      } else {
+        if (!demoProgram.enrolledStudentIds.some((id: any) => id.toString() === (user._id as any).toString())) {
+          demoProgram.enrolledStudentIds.push(user._id as any);
+          await demoProgram.save();
+        }
+      }
+    } catch (progErr) {
+      console.warn("Auto-enroll demo program warning:", progErr);
+    }
+  }
 }
 
 export const registerUser = async (data: RegisterInput): Promise<AuthResult> => {
@@ -103,6 +159,9 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       roles: [targetRole],
       language: "English",
     });
+
+    // Auto-approve tuition and issue permanent code in dev
+    await autoEnrollDemoTuitionProgram(user);
   } catch (createErr: any) {
     if (createErr?.code === 11000 || (createErr?.name === "MongoServerError" && createErr?.code === 11000)) {
       throw new Error("This email ID already has an account or is already in use. Please log in instead.");
@@ -281,6 +340,11 @@ export const loginUser = async (data: LoginInput): Promise<AuthResult> => {
     await user.save();
   }
 
+  // Auto-approve tuition and issue permanent code in dev if not yet issued
+  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+    await autoEnrollDemoTuitionProgram(user);
+  }
+
   const sessionToken = generateSessionToken(user);
 
   const resolvedName =
@@ -451,6 +515,11 @@ export const getCurrentUser = async (tokenOrId: string): Promise<AuthResult> => 
 
   if (userModified) {
     await user.save();
+  }
+
+  // Auto-approve tuition and issue permanent code in dev if not yet issued
+  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+    await autoEnrollDemoTuitionProgram(user);
   }
 
   const sessionToken = generateSessionToken(user);
@@ -964,6 +1033,11 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
     await user.save();
   }
 
+  // Auto-approve tuition and issue permanent code in dev if not yet issued
+  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+    await autoEnrollDemoTuitionProgram(user);
+  }
+
   const sessionToken = generateSessionToken(user);
 
   try {
@@ -1226,6 +1300,11 @@ export const authenticateMockGoogle = async (
   }
   if (userModified) {
     await user.save();
+  }
+
+  // Auto-approve tuition and issue permanent code in dev if not yet issued
+  if (process.env.AUTO_APPROVE_TUITION_DEV === "true" && (!user.studentCode && !user.teacherCode)) {
+    await autoEnrollDemoTuitionProgram(user);
   }
 
   const sessionToken = generateSessionToken(user);

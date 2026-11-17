@@ -10,6 +10,7 @@ import TuitionMaterial from "../models/TuitionMaterial";
 import TuitionAssessment from "../models/TuitionAssessment";
 import TuitionSession from "../models/TuitionSession";
 import TuitionAttendance from "../models/TuitionAttendance";
+import User from "../models/User";
 
 export const getMyProfile = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -51,6 +52,15 @@ export const adminVerifyProvider = async (req: Request, res: Response): Promise<
       tier,
       adminActor
     );
+
+    if (status === "approved" && profile?.userId) {
+      const providerUser = await User.findById(profile.userId);
+      if (providerUser) {
+        providerUser.issuePermanentTuitionCode();
+        await providerUser.save();
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: `Tuition provider status updated to ${status}`,

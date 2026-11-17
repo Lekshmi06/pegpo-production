@@ -487,3 +487,167 @@ export async function createTuitionProgram(req: Request, res: Response): Promise
     res.status(500).json({ success: false, message: error.message || "Failed to create tuition program." });
   }
 }
+
+/**
+ * 8. POST /api/tuition/requests/program-access
+ * Authenticated student or teacher requests tuition access (sets tuitionApprovalStatus to 'pending')
+ */
+export async function requestProgramAccess(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found." });
+      return;
+    }
+
+    if (user.tuitionApprovalStatus === "approved" && (user.studentCode || user.teacherCode)) {
+      res.status(200).json({
+        success: true,
+        message: "Tuition access is already approved and permanent code is active.",
+        tuitionApprovalStatus: "approved",
+        code: user.studentCode || user.teacherCode,
+        user,
+      });
+      return;
+    }
+
+    if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+      const code = user.issuePermanentTuitionCode();
+      user.tuitionApprovalStatus = "approved";
+      await user.save();
+
+      try {
+        let demoProgram = await TuitionProgram.findOne({ code: "PRG-PHY12-DEMO" });
+        if (!demoProgram) {
+          demoProgram = await TuitionProgram.create({
+            title: "Class 12 Physics - Mechanics & Electromagnetism",
+            code: "PRG-PHY12-DEMO",
+            subject: "Physics",
+            grade: "Class 12",
+            description: "Comprehensive Class 12 CBSE & competitive Physics tuition program covering mechanics, electrostatics, optics, and modern physics.",
+            schedule: [
+              { day: "Monday", startTime: "17:00", endTime: "18:30" },
+              { day: "Wednesday", startTime: "17:00", endTime: "18:30" },
+              { day: "Friday", startTime: "17:00", endTime: "18:30" },
+            ],
+            teacherIds: [],
+            enrolledStudentIds: [],
+            status: "active",
+            maxCapacity: 50,
+          });
+        }
+
+        const isTeacher =
+          user.userType === "teacher" ||
+          user.userType === "tuition_provider" ||
+          user.activeRole === "teacher" ||
+          user.activeRole === "tuition_provider" ||
+          (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+        if (isTeacher) {
+          if (!demoProgram.teacherIds.some((id: any) => id.toString() === (user._id as any).toString())) {
+            demoProgram.teacherIds.push(user._id as any);
+            await demoProgram.save();
+          }
+        } else {
+          if (!demoProgram.enrolledStudentIds.some((id: any) => id.toString() === (user._id as any).toString())) {
+            demoProgram.enrolledStudentIds.push(user._id as any);
+            await demoProgram.save();
+          }
+        }
+      } catch (progErr) {
+        console.warn("Auto-enroll demo program warning:", progErr);
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Tuition access auto-approved in dev mode.",
+        tuitionApprovalStatus: "approved",
+        code,
+        user,
+      });
+      return;
+    }
+
+    user.tuitionApprovalStatus = "pending";
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Tuition access request submitted successfully. Pending Admin approval.",
+      tuitionApprovalStatus: "pending",
+      user,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to request tuition access." });
+  }
+}
+
+/**
+ * 9. POST /api/tuition/admin/requests/:requestId/approve-program-access
+ * Platform admin approves tuition access request, issues permanent code, and optionally enrolls in a TuitionProgram
+ */
+export async function approveProgramAccess(req: Request, res: Response): Promise<void> {
+  try {
+    const requestId = getParam(req.params.requestId);
+    const { userId: bodyUserId, programId } = req.body;
+
+    // Target user can be provided directly or found via requestId
+    const targetUserId = bodyUserId || (mongoose.Types.ObjectId.isValid(requestId) ? requestId : undefined);
+    if (!targetUserId) {
+      res.status(400).json({ success: false, message: "Target userId is required for approval." });
+      return;
+    }
+
+    const user = await User.findById(targetUserId);
+    if (!user) {
+      res.status(404).json({ success: false, message: "Target user not found." });
+      return;
+    }
+
+    // Issue permanent tuition code and mark approved
+    const code = user.issuePermanentTuitionCode();
+    await user.save();
+
+    // Optionally assign/enroll in TuitionProgram
+    let program: any = null;
+    if (programId && mongoose.Types.ObjectId.isValid(programId)) {
+      program = await TuitionProgram.findById(programId);
+      if (program) {
+        const isTeacher =
+          user.userType === "teacher" ||
+          user.userType === "tuition_provider" ||
+          user.activeRole === "teacher" ||
+          user.activeRole === "tuition_provider";
+
+        if (isTeacher) {
+          if (!program.teacherIds.some((id: any) => id.toString() === user._id.toString())) {
+            program.teacherIds.push(user._id);
+          }
+        } else {
+          if (!program.enrolledStudentIds.some((id: any) => id.toString() === user._id.toString())) {
+            program.enrolledStudentIds.push(user._id);
+          }
+        }
+        await program.save();
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Permanent tuition code issued and tuition access approved.",
+      code,
+      tuitionApprovalStatus: "approved",
+      user,
+      program,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to approve tuition access." });
+  }
+}

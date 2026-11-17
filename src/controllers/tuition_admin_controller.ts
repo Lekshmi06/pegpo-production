@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import TuitionRequest from "../models/TuitionRequest";
+import User from "../models/User";
 import * as centralizedService from "../services/tuition_centralized_service";
 import * as pricingService from "../services/tuition_pricing_service";
 import * as payoutService from "../services/tuition_payout_service";
@@ -88,6 +89,20 @@ export const adminFinalizeTeacher = async (
       teacherId,
       adminNotes
     );
+
+    // Issue permanent codes for confirmed teacher and student
+    const teacherUser = await User.findById(teacherId);
+    if (teacherUser) {
+      teacherUser.issuePermanentTuitionCode();
+      await teacherUser.save();
+    }
+    if (updatedRequest?.studentId) {
+      const studentUser = await User.findById(updatedRequest.studentId);
+      if (studentUser) {
+        studentUser.issuePermanentTuitionCode();
+        await studentUser.save();
+      }
+    }
 
     res.status(200).json({
       success: true,

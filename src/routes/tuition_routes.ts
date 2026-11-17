@@ -40,6 +40,7 @@ router.post("/provider/onboarding", authenticateUser, providerController.submitO
 // 3. STUDENT WORKFLOW & PORTAL (AUTHENTICATED)
 // ==========================================
 router.get("/requests/eligibility", authenticateUser, requestController.checkTrialEligibility);
+router.post("/requests/program-access", authenticateUser, programController.requestProgramAccess);
 router.post("/requests", authenticateUser, requestController.createTuitionRequest);
 router.post("/requests/:requestId/trial-feedback", authenticateUser, requestController.submitTrialFeedback);
 router.post("/requests/:requestId/select-teacher", authenticateUser, requestController.selectPreferredTeacher);
@@ -109,6 +110,7 @@ router.post("/admin/providers/:profileId/recalculate-tier", authenticateUser, re
 router.get("/admin/requests", authenticateUser, requireTuitionPlatformAdmin, adminController.getAdminTuitionRequests);
 router.post("/admin/requests/:requestId/assign-trials", authenticateUser, requireTuitionPlatformAdmin, adminController.adminAssignTrials);
 router.post("/admin/requests/:requestId/finalize-teacher", authenticateUser, requireTuitionPlatformAdmin, adminController.adminFinalizeTeacher);
+router.post("/admin/requests/:requestId/approve-program-access", authenticateUser, requireTuitionPlatformAdmin, programController.approveProgramAccess);
 router.get("/admin/pricing", authenticateUser, requireTuitionPlatformAdmin, adminController.getPricingRules);
 router.post("/admin/pricing", authenticateUser, requireTuitionPlatformAdmin, adminController.createPricingRule);
 router.put("/admin/pricing/:pricingId", authenticateUser, requireTuitionPlatformAdmin, adminController.updatePricingRule);
