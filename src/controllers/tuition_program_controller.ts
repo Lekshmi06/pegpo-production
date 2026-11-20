@@ -4,10 +4,100 @@ import User, { IUser } from "../models/User";
 import TuitionProgram, { ITuitionProgram } from "../models/TuitionProgram";
 import TuitionRequest from "../models/TuitionRequest";
 import TuitionProviderProfile from "../models/TuitionProviderProfile";
+import TeacherProfile from "../models/TeacherProfile";
+import StudentProfile from "../models/StudentProfile";
 import CombinedStudyMessage, { ICombinedStudyMessage, CombinedStudyMessageType } from "../models/CombinedStudyMessage";
 import LiveClassSession from "../models/LiveClassSession";
 import SessionRecording from "../models/SessionRecording";
 import { generateSessionToken } from "../utils/token";
+
+/**
+ * Enriches raw teacher user documents with instructor bio, avatar, qualifications and credentials
+ */
+async function enrichTeachers(teacherDocs: any[]): Promise<any[]> {
+  if (!teacherDocs || teacherDocs.length === 0) return [];
+  const teacherUserIds = teacherDocs.map((t) => (t._id || t));
+  const [providerProfiles, teacherProfiles] = await Promise.all([
+    TuitionProviderProfile.find({ userId: { $in: teacherUserIds } }).lean(),
+    TeacherProfile.find({ userId: { $in: teacherUserIds } }).lean(),
+  ]);
+
+  const providerMap = new Map(providerProfiles.map((p) => [p.userId.toString(), p]));
+  const teacherProfileMap = new Map(teacherProfiles.map((tp) => [tp.userId.toString(), tp]));
+
+  return teacherDocs.map((t) => {
+    const uid = (t._id || t).toString();
+    const pProfile = providerMap.get(uid);
+    const tProfile = teacherProfileMap.get(uid);
+
+    const name = t.displayName || t.fullName || t.name || pProfile?.fullName || tProfile?.name || "Instructor";
+    const avatar = t.avatarUrl || pProfile?.photoUrl || tProfile?.avatar || "";
+    const teacherCode = t.teacherCode || "";
+    const bio = pProfile?.bio || tProfile?.bio || pProfile?.headline || "Experienced Subject Specialist";
+    const qualifications =
+      pProfile?.qualifications && pProfile.qualifications.length > 0
+        ? pProfile.qualifications
+        : pProfile?.education && pProfile.education.length > 0
+        ? pProfile.education.map((e: any) => e.degree)
+        : tProfile?.department
+        ? [tProfile.department]
+        : ["Certified Educator"];
+    const experienceYears = pProfile?.experienceYears ?? tProfile?.experienceYears ?? 5;
+    const subjects =
+      pProfile?.subjects && pProfile.subjects.length > 0
+        ? pProfile.subjects
+        : tProfile?.subjects && tProfile.subjects.length > 0
+        ? tProfile.subjects
+        : [];
+
+    return {
+      _id: uid,
+      name,
+      email: t.email || "",
+      avatar,
+      profilePicture: avatar,
+      teacherCode,
+      bio,
+      qualifications,
+      experienceYears,
+      subjects,
+      platformTier: pProfile?.platformTier || "standard",
+      userType: "teacher",
+    };
+  });
+}
+
+/**
+ * Enriches student user documents with academic details and avatars
+ */
+async function enrichStudents(studentDocs: any[], programGrade?: string): Promise<any[]> {
+  if (!studentDocs || studentDocs.length === 0) return [];
+  const studentUserIds = studentDocs.map((s) => (s._id || s));
+  const studentProfiles = await StudentProfile.find({ userId: { $in: studentUserIds } }).lean();
+  const profileMap = new Map(studentProfiles.map((sp) => [sp.userId.toString(), sp]));
+
+  return studentDocs.map((s) => {
+    const uid = (s._id || s).toString();
+    const sp = profileMap.get(uid);
+    const name = s.displayName || s.fullName || s.name || "Student";
+    const avatar = s.avatarUrl || (sp as any)?.avatar || "";
+    const studentCode = s.studentCode || "";
+    const grade = programGrade || sp?.schoolDetails?.classLevel || sp?.education?.level || sp?.education?.classLevel || "Standard";
+    const bio = sp?.schoolDetails?.schoolName ? `Student at ${sp.schoolDetails.schoolName}` : "Enrolled Learner";
+
+    return {
+      _id: uid,
+      name,
+      email: s.email || "",
+      avatar,
+      profilePicture: avatar,
+      studentCode,
+      grade,
+      bio,
+      userType: "student",
+    };
+  });
+}
 
 /**
  * Helper to extract user ID from authenticated request
@@ -142,24 +232,50 @@ export async function getTuitionPrograms(req: Request, res: Response): Promise<v
 
     const userObjId = new mongoose.Types.ObjectId(userId);
 
+    // Helper to format programs with populated instructor cards
+    const formatProgramsWithTeachers = async (programsList: any[]) => {
+      return Promise.all(
+        programsList.map(async (p) => {
+          const pObj = p.toObject ? p.toObject() : p;
+          const teachers = await enrichTeachers(p.teacherIds || []);
+          return {
+            ...pObj,
+            teachers,
+          };
+        })
+      );
+    };
+
     // If Admin/Institution: return all programs
     if (userRole === "institution") {
-      const allPrograms = await TuitionProgram.find().sort({ createdAt: -1 });
-      res.status(200).json({ success: true, count: allPrograms.length, programs: allPrograms });
+      const allProgramsRaw = await TuitionProgram.find()
+        .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+        .sort({ createdAt: -1 });
+      const programs = await formatProgramsWithTeachers(allProgramsRaw);
+      res.status(200).json({ success: true, count: programs.length, programs });
       return;
     }
 
     // Query enrolled or assigned programs
-    const myPrograms = await TuitionProgram.find({
+    const myProgramsRaw = await TuitionProgram.find({
       $or: [{ enrolledStudentIds: userObjId }, { teacherIds: userObjId }],
-    }).sort({ createdAt: -1 });
+    })
+      .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+      .sort({ createdAt: -1 });
 
     // Also get active catalog programs not yet joined
-    const catalogPrograms = await TuitionProgram.find({
+    const catalogProgramsRaw = await TuitionProgram.find({
       status: "active",
       enrolledStudentIds: { $ne: userObjId },
       teacherIds: { $ne: userObjId },
-    }).limit(20);
+    })
+      .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+      .limit(20);
+
+    const [myPrograms, catalogPrograms] = await Promise.all([
+      formatProgramsWithTeachers(myProgramsRaw),
+      formatProgramsWithTeachers(catalogProgramsRaw),
+    ]);
 
     res.status(200).json({
       success: true,
@@ -173,8 +289,8 @@ export async function getTuitionPrograms(req: Request, res: Response): Promise<v
 
 /**
  * 3. GET /api/tuition/programs/:programId/roster
- * For students: returns assigned teachers & co-students in that program
- * For teachers: returns enrolled students & co-teachers
+ * Returns normalized program details, enriched teachers with bio/credentials,
+ * and enriched students with grade/avatar for both teacher and student views.
  */
 export async function getProgramRoster(req: Request, res: Response): Promise<void> {
   try {
@@ -192,8 +308,8 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
     }
 
     const program = await TuitionProgram.findById(programId)
-      .populate("teacherIds", "name email teacherCode userType")
-      .populate("enrolledStudentIds", "name email studentCode userType");
+      .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+      .populate("enrolledStudentIds", "name email studentCode userType avatarUrl displayName fullName");
 
     if (!program) {
       res.status(404).json({ success: false, message: "Tuition program not found." });
@@ -201,8 +317,8 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
     }
 
     const userIdStr = userId.toString();
-    const isEnrolled = program.enrolledStudentIds.some((s: any) => s._id.toString() === userIdStr);
-    const isTeacher = program.teacherIds.some((t: any) => t._id.toString() === userIdStr);
+    const isEnrolled = program.enrolledStudentIds.some((s: any) => (s._id || s).toString() === userIdStr);
+    const isTeacher = program.teacherIds.some((t: any) => (t._id || t).toString() === userIdStr);
     const isAdmin = (req.user as any)?.role === "institution" || (req.user as any)?.userType === "institution";
 
     if (!isEnrolled && !isTeacher && !isAdmin) {
@@ -213,39 +329,105 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
       return;
     }
 
-    if (isTeacher || isAdmin) {
-      // Teacher/Admin view: full details of enrolled students
-      res.status(200).json({
-        success: true,
-        programId: program._id,
-        programTitle: program.title,
-        programCode: program.code,
-        subject: program.subject,
-        role: "teacher",
-        teachers: program.teacherIds,
-        enrolledStudents: program.enrolledStudentIds,
-      });
-    } else {
-      // Student view: assigned teachers + co-students (studentCode, name)
-      const coStudents = (program.enrolledStudentIds as any[]).map((s) => ({
-        _id: s._id,
-        name: s.name,
-        studentCode: s.studentCode,
-      }));
+    const [enrichedTeachers, enrichedStudents] = await Promise.all([
+      enrichTeachers(program.teacherIds),
+      enrichStudents(program.enrolledStudentIds, program.grade),
+    ]);
 
-      res.status(200).json({
-        success: true,
-        programId: program._id,
-        programTitle: program.title,
-        programCode: program.code,
-        subject: program.subject,
-        role: "student",
-        assignedTeachers: program.teacherIds,
-        coStudents,
-      });
-    }
+    const userRoleStr = isTeacher || isAdmin ? "teacher" : "student";
+
+    res.status(200).json({
+      success: true,
+      program: {
+        ...program.toObject(),
+        teachers: enrichedTeachers,
+      },
+      programId: program._id,
+      programTitle: program.title,
+      programCode: program.code,
+      subject: program.subject,
+      grade: program.grade,
+      syllabusTopics: program.syllabusTopics || [],
+      requiredMaterials: program.requiredMaterials || [],
+      nextSessionTopic: program.nextSessionTopic || "",
+      userRole: userRoleStr,
+      role: userRoleStr,
+      teachers: enrichedTeachers,
+      assignedTeachers: enrichedTeachers,
+      students: enrichedStudents,
+      enrolledStudents: enrichedStudents,
+      coStudents: enrichedStudents,
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to fetch program roster." });
+  }
+}
+
+/**
+ * 3b. PATCH /api/tuition/programs/:programId/overview
+ * Updates syllabusTopics, requiredMaterials, and nextSessionTopic.
+ * Accessible by assigned teachers or institution administrators.
+ */
+export async function updateProgramOverview(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    const programId = getParam(req.params.programId);
+
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(programId)) {
+      res.status(400).json({ success: false, message: "Invalid program ID format." });
+      return;
+    }
+
+    const program = await TuitionProgram.findById(programId);
+    if (!program) {
+      res.status(404).json({ success: false, message: "Tuition program not found." });
+      return;
+    }
+
+    const userIdStr = userId.toString();
+    const isTeacher = program.teacherIds.some((t: any) => t.toString() === userIdStr);
+    const isAdmin = (req.user as any)?.role === "institution" || (req.user as any)?.userType === "institution";
+
+    if (!isTeacher && !isAdmin) {
+      res.status(403).json({
+        success: false,
+        message: "Unauthorized: Only assigned instructors or administrators can update the program overview.",
+      });
+      return;
+    }
+
+    const { syllabusTopics, requiredMaterials, nextSessionTopic } = req.body;
+
+    if (Array.isArray(syllabusTopics)) {
+      program.syllabusTopics = syllabusTopics
+        .filter((t: any) => typeof t === "string" && t.trim())
+        .map((t: string) => t.trim());
+    }
+
+    if (Array.isArray(requiredMaterials)) {
+      program.requiredMaterials = requiredMaterials
+        .filter((m: any) => typeof m === "string" && m.trim())
+        .map((m: string) => m.trim());
+    }
+
+    if (typeof nextSessionTopic === "string") {
+      program.nextSessionTopic = nextSessionTopic.trim();
+    }
+
+    await program.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Program overview updated successfully.",
+      program,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to update program overview." });
   }
 }
 

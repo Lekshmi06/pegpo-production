@@ -22,6 +22,15 @@ export interface IAttendanceLog {
   durationMinutes: number;
 }
 
+export interface ILiveChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: "host" | "student" | "teacher";
+  text: string;
+  timestamp: Date;
+}
+
 export interface ILiveClassSession extends Document {
   title: string;
   hostId: mongoose.Types.ObjectId;
@@ -36,6 +45,7 @@ export interface ILiveClassSession extends Document {
   authorizedStudentIds: mongoose.Types.ObjectId[];
   activeParticipants: ILiveParticipant[];
   attendanceLogs?: IAttendanceLog[];
+  chatMessages?: ILiveChatMessage[];
   totalDurationMinutes?: number;
   settings: {
     allowMicrophone: boolean;
@@ -170,6 +180,16 @@ const liveClassSessionSchema = new Schema<ILiveClassSession>(
           type: Number,
           default: 0,
         },
+      },
+    ],
+    chatMessages: [
+      {
+        id: { type: String, required: true },
+        senderId: { type: String, required: true },
+        senderName: { type: String, required: true },
+        senderRole: { type: String, default: "student" },
+        text: { type: String, required: true, trim: true },
+        timestamp: { type: Date, default: Date.now },
       },
     ],
     totalDurationMinutes: {

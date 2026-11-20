@@ -13,6 +13,7 @@ import * as adminController from "../controllers/tuition_admin_controller";
 import * as programController from "../controllers/tuition_program_controller";
 import complaintController from "../controllers/complaint_controller";
 import homeworkController from "../controllers/homework_controller";
+import * as assessmentController from "../controllers/live_assessment_controller";
 import { combinedStudyUpload } from "../config/combined_study_upload";
 import { getStudentSchedule } from "../services/tuition_schedule_service";
 
@@ -133,6 +134,7 @@ router.get("/programs", authenticateUser, programController.getTuitionPrograms);
 router.post("/programs", authenticateUser, programController.createTuitionProgram);
 router.post("/programs/:programId/request-enrollment", authenticateUser, programController.requestProgramEnrollment);
 router.get("/programs/:programId/roster", authenticateUser, programController.getProgramRoster);
+router.patch("/programs/:programId/overview", authenticateUser, programController.updateProgramOverview);
 router.get("/programs/:programId/recordings", authenticateUser, programController.getProgramRecordings);
 router.get("/teacher/enrolled-students", authenticateUser, programController.getTeacherEnrolledStudents);
 
@@ -160,5 +162,13 @@ router.get("/programs/:programId/homework", authenticateUser, homeworkController
 router.post("/programs/:programId/homework", authenticateUser, homeworkController.createProgramHomework);
 router.post("/homework/:homeworkId/submit", authenticateUser, homeworkController.submitHomework);
 router.patch("/homework/:homeworkId/submissions/:studentId/grade", authenticateUser, homeworkController.gradeHomeworkSubmission);
+
+// ==========================================
+// 10. IN-MEETING LIVE ASSESSMENTS & QUIZZES
+// ==========================================
+router.post("/sessions/:sessionId/assessments", authenticateUser, assessmentController.publishAssessment);
+router.get("/sessions/:sessionId/assessments", authenticateUser, assessmentController.getSessionAssessments);
+router.post("/assessments/:assessmentId/submit", authenticateUser, assessmentController.submitAssessment);
+router.patch("/assessments/:assessmentId/close", authenticateUser, assessmentController.closeAssessment);
 
 export default router;

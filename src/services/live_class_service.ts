@@ -564,9 +564,14 @@ export async function registerParticipantLeave(
   sessionId: string,
   userId: string
 ): Promise<void> {
-  await LiveClassSession.findByIdAndUpdate(sessionId, {
-    $pull: { activeParticipants: { userId: new mongoose.Types.ObjectId(userId) } },
-  });
+  try {
+    if (mongoose.connection.readyState !== 1) return;
+    await LiveClassSession.findByIdAndUpdate(sessionId, {
+      $pull: { activeParticipants: { userId: new mongoose.Types.ObjectId(userId) } },
+    });
+  } catch (err: any) {
+    // Gracefully handle disconnect race condition on shutdown
+  }
 }
 
 /**

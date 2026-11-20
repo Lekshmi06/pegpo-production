@@ -10,6 +10,8 @@ import {
   endLiveSession,
   checkSessionIdleAutoLogout,
 } from "../services/live_class_service";
+import LiveClassSession from "../models/LiveClassSession";
+import TuitionLiveAssessment from "../models/TuitionLiveAssessment";
 
 interface AuthenticatedPeer {
   userId: string;
@@ -65,12 +67,15 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
         return;
       }
 
+      // Canonicalize room ID so program code and direct session ID resolve to the exact same room
+      const canonicalSessionId = access.session._id.toString();
+
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request, {
           userId,
           name: (sessionPayload as any).name || (access.isHost ? "Teacher" : "Student"),
           role: access.isHost ? "host" : "student",
-          sessionId,
+          sessionId: canonicalSessionId,
         });
       });
     } catch (err: any) {
@@ -124,6 +129,33 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
       }));
 
     const currentBoard = roomWhiteboards.get(sessionId) || [];
+
+    // Fetch persistent chat history (last 50 messages) and active assessments for late joiners
+    let recentChatMessages: any[] = [];
+    let activeAssessments: any[] = [];
+    try {
+      const sessionDoc = await LiveClassSession.findById(sessionId).select("chatMessages").lean();
+      if (sessionDoc?.chatMessages) {
+        recentChatMessages = sessionDoc.chatMessages.slice(-50);
+      }
+      const rawAssessments = await TuitionLiveAssessment.find({
+        sessionId,
+        status: "active",
+      }).sort({ createdAt: -1 }).lean();
+
+      activeAssessments = rawAssessments.map((a: any) => {
+        if (role !== "host") {
+          const mySub = a.submissions?.find((s: any) => s.studentId === userId);
+          if (!mySub) {
+            a.questions = (a.questions || []).map(({ correctOptionIndex, ...rest }: any) => rest);
+          }
+        }
+        return a;
+      });
+    } catch (histErr) {
+      console.warn("[Signalling] Error loading room chat history or assessments:", histErr);
+    }
+
     ws.send(
       JSON.stringify({
         type: "room-state",
@@ -131,6 +163,8 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
         self: { peerId: userId, name, role },
         peers: existingPeers,
         whiteboardState: currentBoard,
+        chatHistory: recentChatMessages,
+        activeAssessments,
       })
     );
 
@@ -242,15 +276,180 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
           case "chat-message": {
             if (typeof message.text === "string" && message.text.trim()) {
               const cleanText = message.text.trim().slice(0, 1000);
+              const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+              const now = new Date();
+
               broadcastToRoom(sessionId, {
                 type: "chat-message",
-                id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+                id: msgId,
                 senderId: userId,
                 senderName: name,
                 senderRole: role,
                 text: cleanText,
-                timestamp: new Date().toISOString(),
+                timestamp: now.toISOString(),
               });
+
+              // Persist chat message to MongoDB LiveClassSession for 1-year compliance audit
+              await LiveClassSession.findByIdAndUpdate(sessionId, {
+                $push: {
+                  chatMessages: {
+                    id: msgId,
+                    senderId: userId,
+                    senderName: name,
+                    senderRole: role,
+                    text: cleanText,
+                    timestamp: now,
+                  },
+                },
+              }).catch((e) => console.warn("[Signalling] Failed persisting chat message:", e));
+            }
+            break;
+          }
+
+          case "assessment:publish": {
+            if (role === "host") {
+              try {
+                let assessment = message.assessment;
+                if (!assessment?._id) {
+                  assessment = await TuitionLiveAssessment.create({
+                    sessionId,
+                    type:
+                      assessment?.type ||
+                      message.assessmentType ||
+                      "quiz",
+                    title: assessment?.title || message.title || "Live Session Assessment",
+                    instructions: assessment?.instructions || message.instructions,
+                    timeLimitMinutes: assessment?.timeLimitMinutes ?? message.timeLimitMinutes ?? 0,
+                    totalPoints: assessment?.totalPoints ?? message.totalPoints ?? 100,
+                    status: "active",
+                    questions: assessment?.questions || message.questions || [],
+                    submissions: [],
+                    publishedBy: userId,
+                    publishedByName: name,
+                  });
+                }
+
+                // Broadcast to students with questions sanitized (correctOptionIndex hidden)
+                // and to host with full assessment
+                const assessmentObj = assessment.toObject ? assessment.toObject() : assessment;
+                const sanitizedAssessment = {
+                  ...assessmentObj,
+                  questions: (assessmentObj.questions || []).map(
+                    ({ correctOptionIndex, ...rest }: any) => rest
+                  ),
+                };
+
+                for (const [peerId, peer] of room.entries()) {
+                  if (peer.socket.readyState === WebSocket.OPEN) {
+                    peer.socket.send(
+                      JSON.stringify({
+                        type: "assessment:published",
+                        assessment: peer.role === "host" ? assessmentObj : sanitizedAssessment,
+                      })
+                    );
+                  }
+                }
+              } catch (pubErr) {
+                console.error("[Signalling] assessment:publish error:", pubErr);
+              }
+            }
+            break;
+          }
+
+          case "assessment:submit": {
+            try {
+              const { assessmentId, answers } = message;
+              if (assessmentId) {
+                const assessment = await TuitionLiveAssessment.findById(assessmentId);
+                if (assessment && assessment.status === "active") {
+                  let calculatedScore = 0;
+                  let totalPossible = 0;
+                  const formattedAnswers: any[] = [];
+
+                  for (const q of assessment.questions) {
+                    const qPoints = q.points > 0 ? q.points : 1;
+                    totalPossible += qPoints;
+                    const ans = (answers || []).find((a: any) => a.questionId === q.id);
+                    const selIdx = ans?.selectedOptionIndex;
+                    if (typeof q.correctOptionIndex === "number" && q.correctOptionIndex >= 0) {
+                      if (selIdx === q.correctOptionIndex) {
+                        calculatedScore += qPoints;
+                      }
+                    } else if (assessment.type === "assignment" && (ans?.textAnswer || selIdx !== undefined)) {
+                      calculatedScore += qPoints;
+                    }
+                    formattedAnswers.push({
+                      questionId: q.id,
+                      selectedOptionIndex: selIdx,
+                      textAnswer: ans?.textAnswer,
+                    });
+                  }
+
+                  const percentage = totalPossible > 0 ? Math.round((calculatedScore / totalPossible) * 100) : 100;
+                  const subRecord = {
+                    studentId: userId,
+                    studentName: name,
+                    studentRole: role,
+                    answers: formattedAnswers,
+                    score: calculatedScore,
+                    totalPossible,
+                    percentage,
+                    submittedAt: new Date(),
+                  };
+
+                  const existingIdx = assessment.submissions.findIndex((s: any) => s.studentId === userId);
+                  if (existingIdx >= 0) {
+                    assessment.submissions[existingIdx] = subRecord as any;
+                  } else {
+                    assessment.submissions.push(subRecord as any);
+                  }
+                  await assessment.save();
+
+                  // 1. Reply to submitting student with their score
+                  ws.send(
+                    JSON.stringify({
+                      type: "assessment:graded",
+                      assessmentId,
+                      submission: subRecord,
+                    })
+                  );
+
+                  // 2. Broadcast updated submission count / leaderboard to room
+                  broadcastToRoom(sessionId, {
+                    type: "assessment:results",
+                    assessmentId,
+                    totalSubmissions: assessment.submissions.length,
+                    submissions: assessment.submissions.map((s: any) => ({
+                      studentId: s.studentId,
+                      studentName: s.studentName,
+                      score: s.score,
+                      totalPossible: s.totalPossible,
+                      percentage: s.percentage,
+                      submittedAt: s.submittedAt,
+                    })),
+                  });
+                }
+              }
+            } catch (subErr) {
+              console.error("[Signalling] assessment:submit error:", subErr);
+            }
+            break;
+          }
+
+          case "assessment:close": {
+            if (role === "host") {
+              try {
+                const { assessmentId } = message;
+                if (assessmentId) {
+                  await TuitionLiveAssessment.findByIdAndUpdate(assessmentId, { status: "closed" });
+                  broadcastToRoom(sessionId, {
+                    type: "assessment:closed",
+                    assessmentId,
+                  });
+                }
+              } catch (closeErr) {
+                console.error("[Signalling] assessment:close error:", closeErr);
+              }
             }
             break;
           }

@@ -20,6 +20,9 @@ export interface ITuitionProgram extends Document {
   subject: string;
   grade?: string;
   description?: string;
+  syllabusTopics?: string[];
+  requiredMaterials?: string[];
+  nextSessionTopic?: string;
   schedule: IProgramScheduleSlot[];
   teacherIds: mongoose.Types.ObjectId[];
   enrolledStudentIds: mongoose.Types.ObjectId[];
@@ -65,6 +68,19 @@ const tuitionProgramSchema = new Schema<ITuitionProgram>(
     description: {
       type: String,
       trim: true,
+    },
+    syllabusTopics: {
+      type: [String],
+      default: [],
+    },
+    requiredMaterials: {
+      type: [String],
+      default: [],
+    },
+    nextSessionTopic: {
+      type: String,
+      trim: true,
+      default: "",
     },
     schedule: [
       {

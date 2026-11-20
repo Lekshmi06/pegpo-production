@@ -12,6 +12,7 @@ router.post("/", authenticateUser, liveClassCtrl.createLiveClass);
 
 // Get live class session details and verify authorization
 router.get("/:sessionId", authenticateUser, liveClassCtrl.getLiveClassDetails);
+router.get("/details/:sessionId", authenticateUser, liveClassCtrl.getLiveClassDetails);
 
 // Terminate live class (Host only)
 router.post("/:sessionId/end", authenticateUser, liveClassCtrl.endLiveClass);

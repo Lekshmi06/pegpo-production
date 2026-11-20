@@ -237,8 +237,7 @@ export { app, httpServer, startServer };
 export default app;
 
 const isDirectRun =
-  Boolean(process.argv[1] &&
-  (process.argv[1].endsWith("server.ts") || process.argv[1].endsWith("server.js")));
+  Boolean(process.argv.some((arg) => /server\.(ts|js)$/i.test(arg) || arg.includes("server")));
 
 if (isDirectRun && process.env.NODE_ENV !== "test") {
   startServer();

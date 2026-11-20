@@ -50,13 +50,27 @@ export const complaintController = {
         }
       }
 
+      const ALLOWED_CATEGORIES = [
+        "Academic / Class",
+        "Conduct / Behavior",
+        "Technical / SmartBoard",
+        "Schedule / Billing",
+        "Other",
+      ];
+      let safeCategory = category;
+      let finalDescription = description.trim();
+      if (!ALLOWED_CATEGORIES.includes(category)) {
+        safeCategory = "Other";
+        finalDescription = `[Category: ${category}] ${finalDescription}`;
+      }
+
       const complaint = await TuitionComplaint.create({
         isAnonymous: Boolean(isAnonymous),
         reporterId: new mongoose.Types.ObjectId(userId),
         reporterRole,
-        category,
+        category: safeCategory,
         subject: subject.trim(),
-        description: description.trim(),
+        description: finalDescription,
         programId: validProgramId,
         status: "open",
         adminProgressNotes: [
