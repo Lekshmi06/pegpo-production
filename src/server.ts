@@ -39,6 +39,9 @@ import adminUserRoutes from "./routes/admin_user_routes";
 import adminPlatformRoutes from "./routes/admin_platform_routes";
 import adminTaskRoutes from "./routes/admin_task_routes";
 import adminCrmRoutes from "./routes/admin_crm_routes";
+import adminEdupyeRoutes from "./routes/admin_edupye_routes";
+import contentRoutes from "./routes/content_routes";
+import landingCmsRoutes from "./routes/landing_cms_routes";
 import http from "http";
 import { setupClassroomSignallingServer } from "./websocket/classroom_signalling";
 
@@ -48,12 +51,39 @@ const PORT = process.env.PORT || 5000;
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     if (!origin) return callback(null, true);
-    const allowed = process.env.ALLOWED_CORS_ORIGINS
+
+    const defaultOrigins = [
+      process.env.FRONTEND_URL,
+      process.env.ADMIN_FRONTEND_URL,
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "http://localhost:8080",
+    ].filter(Boolean) as string[];
+
+    const envOrigins = process.env.ALLOWED_CORS_ORIGINS
       ? process.env.ALLOWED_CORS_ORIGINS.split(/[,\s]+/).filter(Boolean)
-      : null;
-    if (!allowed || allowed.includes(origin) || allowed.includes("*")) {
+      : [];
+
+    const allowed = [...defaultOrigins, ...envOrigins];
+
+    if (allowed.includes(origin) || allowed.includes("*")) {
       return callback(null, true);
     }
+
+    try {
+      const url = new URL(origin);
+      if (
+        url.hostname.endsWith(".vercel.app") ||
+        url.hostname === "vercel.app" ||
+        url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1"
+      ) {
+        return callback(null, true);
+      }
+    } catch {}
+
     const isWildcardMatch = allowed.some((item) => {
       if (item.startsWith("*.")) {
         const suffix = item.slice(1);
@@ -66,9 +96,11 @@ const corsOptions = {
       }
       return false;
     });
+
     if (isWildcardMatch) {
       return callback(null, true);
     }
+
     callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
@@ -119,6 +151,13 @@ app.use((req, res, next) => {
 
 app.use("/uploads", express.static(path.resolve("uploads")));
 app.use("/api/auth", authRoutes);
+app.use("/api/public", landingCmsRoutes);
+app.use("/api/admin", landingCmsRoutes);
+app.use("/api/admin", adminEdupyeRoutes);
+app.use("/api/content", landingCmsRoutes);
+app.use("/api/content", contentRoutes);
+app.use("/api/cms", landingCmsRoutes);
+app.use("/api/cms", contentRoutes);
 app.use("/api/sso", ssoRoutes);
 app.use("/api/institutions", institutionRoutes);
 app.use("/api/courses", courseRoutes);
@@ -175,6 +214,7 @@ app.get("/", (req, res) => {
 });
 
 import { validateSSOConfigurationOnStartup } from "./services/sso_service";
+import { seedAdminAccounts } from "./config/seed_admin_accounts";
 
 const httpServer = http.createServer(app);
 setupClassroomSignallingServer(httpServer);
@@ -182,6 +222,11 @@ setupClassroomSignallingServer(httpServer);
 const startServer = async (): Promise<void> => {
   validateSSOConfigurationOnStartup();
   await connectDB();
+  try {
+    await seedAdminAccounts();
+  } catch (seedErr) {
+    console.warn("Notice: Admin account seeding on startup warning:", seedErr);
+  }
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);

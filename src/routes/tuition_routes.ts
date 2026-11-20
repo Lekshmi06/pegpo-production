@@ -11,6 +11,8 @@ import * as studentController from "../controllers/tuition_student_controller";
 import * as reviewController from "../controllers/tuition_review_controller";
 import * as adminController from "../controllers/tuition_admin_controller";
 import * as programController from "../controllers/tuition_program_controller";
+import complaintController from "../controllers/complaint_controller";
+import homeworkController from "../controllers/homework_controller";
 import { combinedStudyUpload } from "../config/combined_study_upload";
 import { getStudentSchedule } from "../services/tuition_schedule_service";
 
@@ -76,6 +78,7 @@ router.post("/reviews", authenticateUser, reviewController.createReview);
 router.get("/provider/overview", authenticateTuitionProvider, providerController.getDashboardOverview);
 router.get("/provider/financials", authenticateTuitionProvider, providerController.getFinancials);
 router.get("/provider/payouts", authenticateTuitionProvider, providerController.getTeacherPayouts);
+router.get("/teacher/payouts", authenticateUser, providerController.getTeacherPayouts);
 router.post("/provider/offerings", authenticateTuitionProvider, providerController.createOffering);
 router.get("/provider/offerings", authenticateTuitionProvider, providerController.getMyOfferings);
 router.get("/provider/offerings/:id", authenticateTuitionProvider, providerController.getOfferingDetails);
@@ -125,9 +128,12 @@ router.post("/admin/retention/purge", authenticateUser, requireTuitionPlatformAd
 // ==========================================
 // 6. TUITION PROGRAMS & ROSTERS
 // ==========================================
+router.get("/my-schedule", authenticateUser, programController.getMySchedule);
 router.get("/programs", authenticateUser, programController.getTuitionPrograms);
 router.post("/programs", authenticateUser, programController.createTuitionProgram);
+router.post("/programs/:programId/request-enrollment", authenticateUser, programController.requestProgramEnrollment);
 router.get("/programs/:programId/roster", authenticateUser, programController.getProgramRoster);
+router.get("/programs/:programId/recordings", authenticateUser, programController.getProgramRecordings);
 router.get("/teacher/enrolled-students", authenticateUser, programController.getTeacherEnrolledStudents);
 
 // ==========================================
@@ -140,5 +146,19 @@ router.post(
   combinedStudyUpload.single("file"),
   programController.postCombinedStudyMessage
 );
+
+// ==========================================
+// 8. COMPLAINTS & GRIEVANCE TRACKING
+// ==========================================
+router.post("/complaints", authenticateUser, complaintController.submitComplaint);
+router.get("/complaints/mine", authenticateUser, complaintController.getMyComplaints);
+
+// ==========================================
+// 9. BATCH HOMEWORK & ASSIGNMENTS
+// ==========================================
+router.get("/programs/:programId/homework", authenticateUser, homeworkController.getProgramHomework);
+router.post("/programs/:programId/homework", authenticateUser, homeworkController.createProgramHomework);
+router.post("/homework/:homeworkId/submit", authenticateUser, homeworkController.submitHomework);
+router.patch("/homework/:homeworkId/submissions/:studentId/grade", authenticateUser, homeworkController.gradeHomeworkSubmission);
 
 export default router;

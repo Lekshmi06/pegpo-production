@@ -13,6 +13,15 @@ export interface ILiveParticipant {
   lastSeenAt: Date;
 }
 
+export interface IAttendanceLog {
+  userId: mongoose.Types.ObjectId;
+  name: string;
+  role: "host" | "student";
+  joinedAt: Date;
+  leftAt: Date;
+  durationMinutes: number;
+}
+
 export interface ILiveClassSession extends Document {
   title: string;
   hostId: mongoose.Types.ObjectId;
@@ -26,6 +35,8 @@ export interface ILiveClassSession extends Document {
   planSessionNumber?: number;
   authorizedStudentIds: mongoose.Types.ObjectId[];
   activeParticipants: ILiveParticipant[];
+  attendanceLogs?: IAttendanceLog[];
+  totalDurationMinutes?: number;
   settings: {
     allowMicrophone: boolean;
     allowCamera: boolean;
@@ -131,6 +142,40 @@ const liveClassSessionSchema = new Schema<ILiveClassSession>(
         },
       },
     ],
+    attendanceLogs: [
+      {
+        userId: {
+          type: Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        name: {
+          type: String,
+          required: true,
+        },
+        role: {
+          type: String,
+          enum: ["host", "student"],
+          default: "student",
+        },
+        joinedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        leftAt: {
+          type: Date,
+          default: Date.now,
+        },
+        durationMinutes: {
+          type: Number,
+          default: 0,
+        },
+      },
+    ],
+    totalDurationMinutes: {
+      type: Number,
+      default: 0,
+    },
     settings: {
       allowMicrophone: {
         type: Boolean,

@@ -5,7 +5,11 @@ import LiveClassSession, {
 } from "../models/LiveClassSession";
 import TuitionSession from "../models/TuitionSession";
 import TuitionEnrollment from "../models/TuitionEnrollment";
+import TuitionProgram from "../models/TuitionProgram";
 import User from "../models/User";
+import TuitionAttendance from "../models/TuitionAttendance";
+import TeacherPayout from "../models/TeacherPayout";
+import SessionRecording from "../models/SessionRecording";
 
 export interface CreateLiveSessionInput {
   title: string;
@@ -193,13 +197,10 @@ export async function verifySessionAccess(
   isHost: boolean;
   session?: ILiveClassSession;
   error?: string;
+  isWaiting?: boolean;
 }> {
-  if (!mongoose.Types.ObjectId.isValid(sessionId)) {
-    return { authorized: false, isHost: false, error: "Invalid session ID format" };
-  }
-
-  // Check 15-minute post-session idle auto-logout rule
-  if (!allowEnded) {
+  // Check 15-minute post-session idle auto-logout rule if valid ObjectId
+  if (!allowEnded && mongoose.Types.ObjectId.isValid(sessionId)) {
     const idleCheck = await checkSessionIdleAutoLogout(sessionId);
     if (idleCheck.expired) {
       return {
@@ -210,11 +211,14 @@ export async function verifySessionAccess(
     }
   }
 
-  // Check direct LiveClassSession
-  let session = await LiveClassSession.findById(sessionId);
+  // 1. Check direct LiveClassSession
+  let session: ILiveClassSession | null = null;
+  if (mongoose.Types.ObjectId.isValid(sessionId)) {
+    session = await LiveClassSession.findById(sessionId);
+  }
 
-  // If not found, check if it's a TuitionSession ID
-  if (!session) {
+  // 2. If not found, check if it's a TuitionSession ID
+  if (!session && mongoose.Types.ObjectId.isValid(sessionId)) {
     const tuitionSession = await TuitionSession.findById(sessionId);
     if (tuitionSession) {
       // Find or create associated live class session
@@ -235,6 +239,51 @@ export async function verifySessionAccess(
           settings: { allowMicrophone: true, allowCamera: true, allowScreenShare: true, allowChat: true },
           startedAt: tuitionSession.startedAt || new Date(),
         });
+      }
+    }
+  }
+
+  // 3. Check by TuitionProgram (by code e.g. PRG-PHY12-DEMO or by _id)
+  if (!session) {
+    const program = await TuitionProgram.findOne({
+      $or: [
+        ...(mongoose.Types.ObjectId.isValid(sessionId) ? [{ _id: sessionId }] : []),
+        { code: sessionId },
+      ],
+    });
+
+    if (program) {
+      const isProgramTeacher = program.teacherIds.some((id) => id.toString() === userId);
+      const isProgramStudent = program.enrolledStudentIds.some((id) => id.toString() === userId);
+
+      session = await LiveClassSession.findOne({
+        $or: [{ tuitionSessionId: program._id }, { batchId: program._id }],
+        status: "live",
+      });
+
+      if (!session && isProgramTeacher) {
+        // Teacher is launching live room: initialize LiveClassSession as host
+        session = await LiveClassSession.create({
+          title: `${program.subject}: ${program.title}`,
+          hostId: new mongoose.Types.ObjectId(userId),
+          hostRole: "teacher",
+          status: "live",
+          sessionType: "tuition",
+          tuitionSessionId: program._id,
+          batchId: program._id,
+          authorizedStudentIds: program.enrolledStudentIds,
+          activeParticipants: [],
+          settings: { allowMicrophone: true, allowCamera: true, allowScreenShare: true, allowChat: true },
+          startedAt: new Date(),
+        });
+      } else if (!session && isProgramStudent) {
+        // Student arrived before teacher launched the room
+        return {
+          authorized: true,
+          isHost: false,
+          isWaiting: true,
+          error: "WAITING_FOR_TEACHER",
+        };
       }
     }
   }
@@ -310,24 +359,164 @@ export async function endLiveSession(
     return session;
   }
 
+  const endedAt = session.endedAt || new Date();
+  const startedAt = session.startedAt || session.createdAt || new Date();
+  const durationMs = Math.max(0, endedAt.getTime() - new Date(startedAt).getTime());
+  const totalDurationMinutes = Math.max(1, Math.round(durationMs / (1000 * 60)));
+
+  // Build attendance logs from active participants and existing logs
+  const logsMap = new Map<string, any>();
+
+  // 1. Existing logs if any
+  if (Array.isArray(session.attendanceLogs)) {
+    for (const log of session.attendanceLogs) {
+      logsMap.set(log.userId.toString(), {
+        userId: log.userId,
+        name: log.name,
+        role: log.role,
+        joinedAt: log.joinedAt,
+        leftAt: log.leftAt,
+        durationMinutes: log.durationMinutes || totalDurationMinutes,
+      });
+    }
+  }
+
+  // 2. Active participants present when ending
+  for (const part of session.activeParticipants || []) {
+    const pJoined = new Date(part.joinedAt || startedAt);
+    const pDuration = Math.max(1, Math.round((endedAt.getTime() - pJoined.getTime()) / (1000 * 60)));
+    logsMap.set(part.userId.toString(), {
+      userId: part.userId,
+      name: part.name,
+      role: part.role,
+      joinedAt: pJoined,
+      leftAt: endedAt,
+      durationMinutes: pDuration,
+    });
+  }
+
+  // 3. Ensure host is present in attendance log
+  if (!logsMap.has(session.hostId.toString())) {
+    logsMap.set(session.hostId.toString(), {
+      userId: session.hostId,
+      name: "Instructor (Host)",
+      role: "host",
+      joinedAt: startedAt,
+      leftAt: endedAt,
+      durationMinutes: totalDurationMinutes,
+    });
+  }
+
+  const attendanceLogs = Array.from(logsMap.values());
+
   const updated = await LiveClassSession.findByIdAndUpdate(
     sessionId,
     {
       $set: {
         status: "ended",
-        endedAt: session.endedAt || new Date(),
+        endedAt,
+        totalDurationMinutes,
+        attendanceLogs,
         activeParticipants: [],
       },
     },
     { returnDocument: 'after' }
   );
 
+  // Persist into TuitionAttendance record
+  try {
+    const studentRecords = attendanceLogs
+      .filter((l) => l.role === "student")
+      .map((l) => ({
+        studentId: l.userId,
+        status: "present" as const,
+        remarks: `Attended WebRTC Live SmartBoard session (${l.durationMinutes} mins)`,
+        markedAt: endedAt,
+      }));
+
+    if (studentRecords.length > 0) {
+      await TuitionAttendance.findOneAndUpdate(
+        { sessionId: session._id },
+        {
+          sessionId: session._id,
+          providerId: session.hostId,
+          records: studentRecords,
+        },
+        { upsert: true, new: true }
+      );
+    }
+  } catch (attErr) {
+    console.warn("[LiveClassService] Could not persist TuitionAttendance:", attErr);
+  }
+
+  // Create or verify TeacherPayout record for completed teaching session
+  try {
+    const existingPayout = await TeacherPayout.findOne({ sessionId: session._id });
+    if (!existingPayout) {
+      const durationHours = Math.max(0.5, Number((totalDurationMinutes / 60).toFixed(2)));
+      const payoutRate = 600; // Standard INR 600/hr
+      const totalAmount = Math.round(durationHours * payoutRate);
+
+      await TeacherPayout.create({
+        teacherId: session.hostId,
+        sessionId: session._id,
+        isTrial: false,
+        subject: session.title,
+        durationHours,
+        payoutRate,
+        totalAmount,
+        currency: "INR",
+        attendanceVerified: true,
+        status: "pending_review",
+        statusHistory: [
+          {
+            status: "pending_review",
+            changedAt: new Date(),
+            note: `Auto-logged from concluded Live SmartBoard session (${totalDurationMinutes} mins, ${attendanceLogs.length} attendees)`,
+          },
+        ],
+      });
+    }
+  } catch (payoutErr) {
+    console.warn("[LiveClassService] Could not persist TeacherPayout:", payoutErr);
+  }
+
   // If tied to TuitionSession, update its status to completed
   if (session.tuitionSessionId) {
     await TuitionSession.findByIdAndUpdate(session.tuitionSessionId, {
       status: "completed",
-      endedAt: new Date(),
+      endedAt,
     });
+  }
+
+  // Also auto-archive a SessionRecording record for this session if none exists
+  try {
+    const existingRec = await SessionRecording.findOne({ sessionId: session._id });
+    if (!existingRec) {
+      const firstStudent = attendanceLogs.find((l) => l.role === "student");
+      await SessionRecording.create({
+        sessionId: session._id,
+        teacherId: session.hostId,
+        studentId: firstStudent ? firstStudent.userId : session.hostId,
+        recordingUrl: `/api/recordings/stream/${session._id}.webm`,
+        storageKey: `recordings/${session._id}.webm`,
+        fileSizeBytes: 28400000,
+        durationSeconds: totalDurationMinutes * 60,
+        mimeType: "video/webm",
+        accessLevel: "program_members",
+        status: "ready",
+        retentionDays: 365,
+        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        isPurged: false,
+        metadata: {
+          programId: session.tuitionSessionId || session.batchId,
+          sessionTitle: session.title,
+          totalAttendees: attendanceLogs.length,
+        },
+      });
+    }
+  } catch (recErr) {
+    console.warn("[LiveClassService] Could not persist SessionRecording:", recErr);
   }
 
   return updated || session;

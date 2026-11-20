@@ -5,6 +5,7 @@ import {
   loginSuperAdminController,
   loginAdminController,
   loginTuitionAdminController,
+  loginStaffController,
   logoutController,
   meController,
   selectRoleController,
@@ -23,6 +24,7 @@ router.post("/login", loginController);
 router.post("/super-admin/login", loginSuperAdminController);
 router.post("/admin/login", loginAdminController);
 router.post("/tuition-admin/login", loginTuitionAdminController);
+router.post("/staff/login", loginStaffController);
 router.post("/logout", logoutController);
 router.post("/google", googleAuthController);
 router.post("/mock-google", mockGoogleAuthController);

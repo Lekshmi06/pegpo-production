@@ -62,10 +62,11 @@ export const loginController = async (
 ): Promise<void> => {
   try {
     const { username, email, password, selectedRole } = req.body;
-    const identifier = (username || email || "").trim().toLowerCase();
+    const rawIdentifier = (username || email || req.body.userId || req.body.identifier || "").trim();
+    const identifier = rawIdentifier.toLowerCase();
 
     // If identifier or selectedRole is provided and looks like an Admin/ERP login or unified login
-    if (username || selectedRole) {
+    if (username || selectedRole || req.body.userId || req.body.identifier) {
       if (!identifier || !password) {
         res.status(400).json({
           success: false,
@@ -76,7 +77,7 @@ export const loginController = async (
 
       const user = await User.findOne({
         $or: [
-          { username: identifier },
+          { username: { $regex: new RegExp(`^${identifier}$`, "i") } },
           { email: identifier },
           { userId: { $regex: new RegExp(`^${identifier}$`, "i") } },
         ],
@@ -155,7 +156,7 @@ export const loginController = async (
             return;
           }
         } else if (normSelected === "staff") {
-          if (!isStaff(userEffectiveRole) && !isSuperAdmin(userEffectiveRole)) {
+          if (!isStaff(userEffectiveRole) && !isAdmin(userEffectiveRole) && !isSuperAdmin(userEffectiveRole)) {
             res.status(403).json({
               success: false,
               message: `Role mismatch: This account does not have Staff privileges.`,
@@ -179,7 +180,12 @@ export const loginController = async (
         email: user.email,
         role: user.adminRole || user.role || "Staff",
         adminRole: user.adminRole,
-        allowedModules: user.allowedModules,
+        allowedModules: user.allowedModules || (
+          isSuperAdmin(userEffectiveRole) ? Array.from({ length: 33 }, (_, i) => i + 1) :
+          isTuitionOperationsAdmin(userEffectiveRole) ? [1, 2, 3, 4, 5, 33] :
+          isAdmin(userEffectiveRole) ? Array.from({ length: 33 }, (_, i) => i + 1) :
+          [1, 2, 3, 4, 5]
+        ),
         department: user.department || "Operations",
         status: user.status || "Active",
         avatarUrl: user.avatarUrl,
@@ -228,19 +234,20 @@ export const loginSuperAdminController = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const rawIdentifier = (req.body.username || req.body.email || req.body.userId || req.body.identifier || "").trim();
+    const { password } = req.body;
+    if (!rawIdentifier || !password) {
       res.status(400).json({
         success: false,
-        message: "Both User ID/Username and Password are required.",
+        message: "Both Super Admin ID/Username/Email and Password are required.",
       });
       return;
     }
 
-    const cleanIdentifier = username.trim().toLowerCase();
+    const cleanIdentifier = rawIdentifier.toLowerCase();
     const user = await User.findOne({
       $or: [
-        { username: cleanIdentifier },
+        { username: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
         { email: cleanIdentifier },
         { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
       ],
@@ -249,7 +256,7 @@ export const loginSuperAdminController = async (
     if (!user) {
       res.status(401).json({
         success: false,
-        message: "Invalid User ID/Username or Password.",
+        message: "Invalid Super Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -269,7 +276,7 @@ export const loginSuperAdminController = async (
       await user.save();
       res.status(401).json({
         success: false,
-        message: "Invalid User ID/Username or Password.",
+        message: "Invalid Super Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -317,7 +324,7 @@ export const loginSuperAdminController = async (
         email: user.email,
         role: "Super Admin",
         adminRole: "Super Admin",
-        allowedModules: user.allowedModules,
+        allowedModules: user.allowedModules || Array.from({ length: 33 }, (_, i) => i + 1),
         department: user.department || "Executive",
         status: user.status || "Active",
         avatarUrl: user.avatarUrl,
@@ -341,19 +348,20 @@ export const loginAdminController = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const rawIdentifier = (req.body.username || req.body.email || req.body.userId || req.body.identifier || "").trim();
+    const { password } = req.body;
+    if (!rawIdentifier || !password) {
       res.status(400).json({
         success: false,
-        message: "Both Admin/Staff ID and Password are required.",
+        message: "Both Admin ID/Username/Email and Password are required.",
       });
       return;
     }
 
-    const cleanIdentifier = username.trim().toLowerCase();
+    const cleanIdentifier = rawIdentifier.toLowerCase();
     const user = await User.findOne({
       $or: [
-        { username: cleanIdentifier },
+        { username: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
         { email: cleanIdentifier },
         { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
       ],
@@ -362,7 +370,7 @@ export const loginAdminController = async (
     if (!user) {
       res.status(401).json({
         success: false,
-        message: "Invalid Admin ID or Password.",
+        message: "Invalid Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -382,7 +390,7 @@ export const loginAdminController = async (
       await user.save();
       res.status(401).json({
         success: false,
-        message: "Invalid Admin ID or Password.",
+        message: "Invalid Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -403,6 +411,15 @@ export const loginAdminController = async (
       return;
     }
 
+    const userRole = user.adminRole || user.role;
+    if (!isAdmin(userRole) && !isSuperAdmin(userRole)) {
+      res.status(403).json({
+        success: false,
+        message: "Access Denied: Only authorized Administrators can log in through this portal.",
+      });
+      return;
+    }
+
     user.lastLogin = new Date();
     user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
     user.failedLoginAttempts = 0;
@@ -411,18 +428,18 @@ export const loginAdminController = async (
     const token = generateToken(user);
     res.json({
       success: true,
-      message: "Authenticated successfully.",
+      message: "Admin authenticated successfully.",
       token,
       user: {
         id: user.id || user._id,
-        userId: user.userId || `USR-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        userId: user.userId || `ADM-${(user._id as any).toString().slice(-6).toUpperCase()}`,
         username: user.username,
-        displayName: user.displayName || user.fullName || user.name || "User",
+        displayName: user.displayName || user.fullName || user.name || "Administrator",
         email: user.email,
-        role: user.adminRole || user.role || "Staff",
-        adminRole: user.adminRole,
-        allowedModules: user.allowedModules,
-        department: user.department || "Operations",
+        role: "Admin",
+        adminRole: user.adminRole || "Admin",
+        allowedModules: user.allowedModules || Array.from({ length: 33 }, (_, i) => i + 1),
+        department: user.department || "Administration",
         status: user.status || "Active",
         avatarUrl: user.avatarUrl,
       },
@@ -445,19 +462,20 @@ export const loginTuitionAdminController = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const rawIdentifier = (req.body.username || req.body.email || req.body.userId || req.body.identifier || "").trim();
+    const { password } = req.body;
+    if (!rawIdentifier || !password) {
       res.status(400).json({
         success: false,
-        message: "Both Tuition Admin ID and Password are required.",
+        message: "Both Tuition Admin ID/Username/Email and Password are required.",
       });
       return;
     }
 
-    const cleanIdentifier = username.trim().toLowerCase();
+    const cleanIdentifier = rawIdentifier.toLowerCase();
     const user = await User.findOne({
       $or: [
-        { username: cleanIdentifier },
+        { username: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
         { email: cleanIdentifier },
         { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
       ],
@@ -466,7 +484,7 @@ export const loginTuitionAdminController = async (
     if (!user) {
       res.status(401).json({
         success: false,
-        message: "Invalid Tuition Admin ID or Password.",
+        message: "Invalid Tuition Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -486,7 +504,7 @@ export const loginTuitionAdminController = async (
       await user.save();
       res.status(401).json({
         success: false,
-        message: "Invalid Tuition Admin ID or Password.",
+        message: "Invalid Tuition Admin ID/Username/Email or Password.",
       });
       return;
     }
@@ -526,6 +544,120 @@ export const loginTuitionAdminController = async (
     });
   } catch (err: any) {
     console.error("Tuition Admin Login Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during authentication.",
+    });
+  }
+};
+
+/**
+ * Staff Login Endpoint
+ * Route: POST /api/auth/staff/login
+ */
+export const loginStaffController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const rawIdentifier = (req.body.username || req.body.email || req.body.userId || req.body.identifier || "").trim();
+    const { password } = req.body;
+    if (!rawIdentifier || !password) {
+      res.status(400).json({
+        success: false,
+        message: "Both Staff ID/Username/Email and Password are required.",
+      });
+      return;
+    }
+
+    const cleanIdentifier = rawIdentifier.toLowerCase();
+    const user = await User.findOne({
+      $or: [
+        { username: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
+        { email: cleanIdentifier },
+        { userId: { $regex: new RegExp(`^${cleanIdentifier}$`, "i") } },
+      ],
+    });
+
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid Staff ID/Username/Email or Password.",
+      });
+      return;
+    }
+
+    const userPasswordHash = user.passwordHash || user.password;
+    if (!userPasswordHash) {
+      res.status(401).json({
+        success: false,
+        message: "Account password has not been configured. Please contact administrator.",
+      });
+      return;
+    }
+
+    const isPasswordMatch = await bcrypt.compare(password, userPasswordHash);
+    if (!isPasswordMatch) {
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      await user.save();
+      res.status(401).json({
+        success: false,
+        message: "Invalid Staff ID/Username/Email or Password.",
+      });
+      return;
+    }
+
+    if (user.status === "Locked") {
+      res.status(403).json({
+        success: false,
+        message: `Account is locked. ${user.lockoutReason || "Please contact administrator."}`,
+      });
+      return;
+    }
+
+    if (user.status === "Inactive") {
+      res.status(403).json({
+        success: false,
+        message: "Account has been deactivated. Please contact administrator.",
+      });
+      return;
+    }
+
+    const userRole = user.adminRole || user.role;
+    if (!isStaff(userRole) && !isAdmin(userRole) && !isSuperAdmin(userRole)) {
+      res.status(403).json({
+        success: false,
+        message: "Access Denied: Only authorized Staff members can log in through this portal.",
+      });
+      return;
+    }
+
+    user.lastLogin = new Date();
+    user.lastLoginIp = req.ip || (req.headers["x-forwarded-for"] as string) || "client";
+    user.failedLoginAttempts = 0;
+    await user.save();
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      message: "Staff member authenticated successfully.",
+      token,
+      user: {
+        id: user.id || user._id,
+        userId: user.userId || `STF-${(user._id as any).toString().slice(-6).toUpperCase()}`,
+        username: user.username,
+        displayName: user.displayName || user.fullName || user.name || "Staff Member",
+        email: user.email,
+        role: "Staff",
+        adminRole: user.adminRole || "Staff",
+        allowedModules: user.allowedModules || [1, 2, 3, 4, 5],
+        department: user.department || "Operations",
+        status: user.status || "Active",
+        avatarUrl: user.avatarUrl,
+      },
+    });
+  } catch (err: any) {
+    console.error("Staff Login Error:", err);
     res.status(500).json({
       success: false,
       message: "Internal server error during authentication.",

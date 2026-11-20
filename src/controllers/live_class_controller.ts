@@ -40,12 +40,27 @@ export async function getLiveClassDetails(req: Request, res: Response): Promise<
     }
 
     const sessionId = String(req.params.sessionId);
-    const session = await liveClassService.getLiveSession(sessionId, userId);
+    const access = await liveClassService.verifySessionAccess(sessionId, userId, true);
+    if (!access.authorized || (!access.session && !access.isWaiting)) {
+      res.status(403).json({ success: false, error: access.error || "Access denied" });
+      return;
+    }
+
     const rtcConfig = getWebRTCConfiguration();
+
+    if (access.isWaiting) {
+      res.status(200).json({
+        success: true,
+        isWaiting: true,
+        message: "Waiting for instructor to start session",
+        rtcConfig,
+      });
+      return;
+    }
 
     res.json({
       success: true,
-      session,
+      session: access.session,
       rtcConfig,
     });
   } catch (err: any) {

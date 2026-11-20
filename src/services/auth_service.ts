@@ -74,13 +74,20 @@ export function formatUserResponse(user: IUser) {
     roles,
     studentCode: user.studentCode,
     teacherCode: user.teacherCode,
-    tuitionApprovalStatus:
-      user.tuitionApprovalStatus ||
-      (user.studentCode || user.teacherCode
-        ? "approved"
-        : isStudent && process.env.AUTO_APPROVE_TUITION_DEV === "true"
-        ? "approved"
-        : "none"),
+    tuitionApprovalStatus: (() => {
+      const hasCode = Boolean(user.studentCode || user.teacherCode);
+      if (hasCode) {
+        return user.tuitionApprovalStatus && user.tuitionApprovalStatus !== "none"
+          ? user.tuitionApprovalStatus
+          : "approved";
+      }
+      if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+        return user.tuitionApprovalStatus || "approved";
+      }
+      return user.tuitionApprovalStatus && user.tuitionApprovalStatus !== "approved"
+        ? user.tuitionApprovalStatus
+        : "none";
+    })(),
     language: user.language || "English",
   };
 }
@@ -110,9 +117,11 @@ export function shouldAutoEnrollInDev(user: IUser): boolean {
 }
 
 export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
-  if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
-    user.issuePermanentTuitionCode();
-    await user.save();
+  if (process.env.AUTO_APPROVE_TUITION_DEV !== "true") {
+    return;
+  }
+  user.issuePermanentTuitionCode();
+  await user.save();
 
     try {
       let demoProgram = await TuitionProgram.findOne({ code: "PRG-PHY12-DEMO" });
@@ -166,7 +175,6 @@ export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
     } catch (progErr) {
       console.warn("Auto-enroll demo program warning:", progErr);
     }
-  }
 }
 
 export const registerUser = async (data: RegisterInput): Promise<AuthResult> => {
@@ -207,8 +215,13 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       language: "English",
     });
 
-    // Auto-approve tuition and issue permanent code in dev
-    await autoEnrollDemoTuitionProgram(user);
+    // Auto-approve tuition and issue permanent code ONLY when dev auto-approve is explicitly enabled
+    if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+      await autoEnrollDemoTuitionProgram(user);
+    } else if (targetRole === "teacher" || targetRole === "tuition_provider") {
+      user.tuitionApprovalStatus = "pending";
+      await user.save();
+    }
   } catch (createErr: any) {
     if (createErr?.code === 11000 || (createErr?.name === "MongoServerError" && createErr?.code === 11000)) {
       throw new Error("This email ID already has an account or is already in use. Please log in instead.");
@@ -226,6 +239,22 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
         teacherType: "institution",
         goal: "Lesson Planning",
       });
+
+      let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
+      if (!tuitionProfile) {
+        tuitionProfile = await TuitionProviderProfile.create({
+          userId: user._id,
+          fullName: resolvedName,
+          headline: "Tuition Faculty & Subject Mentor",
+          verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
+          platformTier: "standard",
+          calculatedTier: "standard",
+          isProvisionalTier: true,
+          isActive: true,
+          subjects: ["General Tuition"],
+          classesTaught: ["All Levels"],
+        });
+      }
 
       return {
         user: formatUserResponse(user),
@@ -257,11 +286,13 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
           userId: user._id,
           fullName: resolvedName,
           headline: "Tuition Faculty & Subject Mentor",
-          verificationStatus: "pending",
+          verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
           platformTier: "standard",
           calculatedTier: "standard",
           isProvisionalTier: true,
           isActive: true,
+          subjects: ["General Tuition"],
+          classesTaught: ["All Levels"],
         });
       }
 
@@ -1083,6 +1114,12 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
   // Auto-approve tuition and issue permanent code in dev if not yet issued
   if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
+  } else if (
+    (user.userType === "teacher" || user.userType === "tuition_provider" || user.activeRole === "teacher" || user.activeRole === "tuition_provider") &&
+    user.tuitionApprovalStatus !== "approved"
+  ) {
+    user.tuitionApprovalStatus = "pending";
+    await user.save();
   }
 
   const sessionToken = generateSessionToken(user);
@@ -1099,6 +1136,22 @@ export const authenticateWithGoogle = async (input: GoogleAuthInput): Promise<Go
           teacherType: "institution",
           goal: "Lesson Planning",
         })) as any;
+      }
+
+      let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
+      if (!tuitionProfile) {
+        await TuitionProviderProfile.create({
+          userId: user._id,
+          fullName: resolvedName,
+          headline: "Tuition Faculty & Subject Mentor",
+          verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
+          platformTier: "standard",
+          calculatedTier: "standard",
+          isProvisionalTier: true,
+          isActive: true,
+          subjects: ["General Tuition"],
+          classesTaught: ["All Levels"],
+        });
       }
 
       return {
@@ -1352,6 +1405,12 @@ export const authenticateMockGoogle = async (
   // Auto-approve tuition and issue permanent code in dev if not yet issued
   if (shouldAutoEnrollInDev(user)) {
     await autoEnrollDemoTuitionProgram(user);
+  } else if (
+    (user.userType === "teacher" || user.userType === "tuition_provider" || user.activeRole === "teacher" || user.activeRole === "tuition_provider") &&
+    user.tuitionApprovalStatus !== "approved"
+  ) {
+    user.tuitionApprovalStatus = "pending";
+    await user.save();
   }
 
   const sessionToken = generateSessionToken(user);
@@ -1368,6 +1427,22 @@ export const authenticateMockGoogle = async (
           teacherType: "institution",
           goal: "Lesson Planning",
         })) as any;
+      }
+
+      let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
+      if (!tuitionProfile) {
+        await TuitionProviderProfile.create({
+          userId: user._id,
+          fullName: resolvedName,
+          headline: "Tuition Faculty & Subject Mentor",
+          verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
+          platformTier: "standard",
+          calculatedTier: "standard",
+          isProvisionalTier: true,
+          isActive: true,
+          subjects: ["General Tuition"],
+          classesTaught: ["All Levels"],
+        });
       }
 
       return {

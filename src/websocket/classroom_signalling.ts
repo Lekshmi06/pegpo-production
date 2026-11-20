@@ -24,6 +24,9 @@ interface AuthenticatedPeer {
 // In-memory room manager: sessionId -> Map<userId, AuthenticatedPeer>
 const rooms = new Map<string, Map<string, AuthenticatedPeer>>();
 
+// In-memory real-time SmartBoard whiteboard state: sessionId -> CanvasElement[]
+const roomWhiteboards = new Map<string, any[]>();
+
 export function setupClassroomSignallingServer(server: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -120,12 +123,14 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
         isVideoMuted: p.isVideoMuted,
       }));
 
+    const currentBoard = roomWhiteboards.get(sessionId) || [];
     ws.send(
       JSON.stringify({
         type: "room-state",
         sessionId,
         self: { peerId: userId, name, role },
         peers: existingPeers,
+        whiteboardState: currentBoard,
       })
     );
 
@@ -250,15 +255,85 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
             break;
           }
 
+          case "whiteboard:draw":
+          case "whiteboard-draw": {
+            if (message.element) {
+              const board = roomWhiteboards.get(sessionId) || [];
+              board.push(message.element);
+              if (board.length > 2000) board.shift();
+              roomWhiteboards.set(sessionId, board);
+
+              broadcastToRoom(
+                sessionId,
+                {
+                  type: "whiteboard:draw",
+                  senderId: userId,
+                  element: message.element,
+                },
+                userId
+              );
+            }
+            break;
+          }
+
+          case "whiteboard:clear":
+          case "whiteboard-clear": {
+            roomWhiteboards.set(sessionId, []);
+            broadcastToRoom(
+              sessionId,
+              {
+                type: "whiteboard:clear",
+                senderId: userId,
+              },
+              userId
+            );
+            break;
+          }
+
+          case "whiteboard:undo":
+          case "whiteboard-undo": {
+            if (Array.isArray(message.elements)) {
+              roomWhiteboards.set(sessionId, message.elements.slice(0, 2000));
+            } else {
+              const board = roomWhiteboards.get(sessionId) || [];
+              board.pop();
+              roomWhiteboards.set(sessionId, board);
+            }
+            broadcastToRoom(
+              sessionId,
+              {
+                type: "whiteboard:undo",
+                senderId: userId,
+                elements: roomWhiteboards.get(sessionId) || [],
+              },
+              userId
+            );
+            break;
+          }
+
+          case "whiteboard:sync-state":
           case "whiteboard-sync": {
             if (Array.isArray(message.elements)) {
-              // Relay real-time SmartBoard drawing payload to all participants (capped at 500 strokes per sync)
+              // Store and relay SmartBoard drawing state to all participants in session
+              const safeElements = message.elements.slice(0, 2000);
+              roomWhiteboards.set(sessionId, safeElements);
+
+              broadcastToRoom(
+                sessionId,
+                {
+                  type: "whiteboard:sync-state",
+                  senderId: userId,
+                  elements: safeElements,
+                },
+                userId
+              );
+              // Backwards-compatible event
               broadcastToRoom(
                 sessionId,
                 {
                   type: "whiteboard-sync",
                   senderId: userId,
-                  elements: message.elements.slice(0, 500),
+                  elements: safeElements,
                 },
                 userId
               );
@@ -279,6 +354,7 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                 p.socket.close(1000, "Classroom ended by host");
               }
               rooms.delete(sessionId);
+              roomWhiteboards.delete(sessionId);
             } else {
               ws.send(
                 JSON.stringify({
@@ -340,6 +416,7 @@ async function handlePeerDisconnect(sessionId: string, userId: string) {
 
     if (room.size === 0) {
       rooms.delete(sessionId);
+      roomWhiteboards.delete(sessionId);
     }
   }
 }

@@ -157,6 +157,12 @@ export const submitTuitionProviderOnboarding = async (
     await profile.save();
   }
 
+  // Ensure user's tuition approval status reflects pending admin review
+  if (user.tuitionApprovalStatus !== "approved") {
+    user.tuitionApprovalStatus = "pending";
+    await user.save();
+  }
+
   return profile;
 };
 

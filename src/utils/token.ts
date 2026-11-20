@@ -76,9 +76,13 @@ export function verifySessionToken(token: string): TokenPayload | null {
   if (trimmed.split(".").length === 3) {
     try {
       const secret = getJwtSecret();
-      const decoded = jwt.verify(trimmed, secret) as TokenPayload;
-      if (decoded && decoded.userId) {
-        return decoded;
+      const decoded = jwt.verify(trimmed, secret) as any;
+      const resolvedUserId = (decoded._id || decoded.id || decoded.userId)?.toString();
+      if (decoded && resolvedUserId) {
+        return {
+          ...decoded,
+          userId: resolvedUserId,
+        };
       }
     } catch {
       // Signature mismatch, malformed, or expired

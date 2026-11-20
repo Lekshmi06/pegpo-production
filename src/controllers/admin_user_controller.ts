@@ -328,6 +328,10 @@ export const adminUserController = {
         }
       }
 
+      const finalRole = isSuperAdmin(currentUserRole)
+        ? (role === "Super Admin" ? "Super Admin" : (role.includes("Tuition") ? "Tuition Operations Admin" : (role === "Admin" ? "Admin" : "Staff")))
+        : (role === "Admin" ? "Admin" : "Staff");
+
       // Generate or validate unique User ID
       let finalUserId = userId ? userId.trim().toUpperCase() : null;
       if (finalUserId) {
@@ -340,7 +344,7 @@ export const adminUserController = {
           return;
         }
       } else {
-        const prefix = role === "Admin" ? "ADM" : "STF";
+        const prefix = finalRole === "Super Admin" ? "SA" : (finalRole.includes("Tuition") ? "TAD" : (finalRole === "Admin" ? "ADM" : "STF"));
         let isUnique = false;
         while (!isUnique) {
           const randNum = Math.floor(100 + Math.random() * 900);
@@ -364,6 +368,8 @@ export const adminUserController = {
         if (isAdmin(currentUserRole)) {
           cleanAllowedModules = cleanAllowedModules.filter((id) => id !== 53 && id !== 9);
         }
+      } else if (finalRole === "Tuition Operations Admin") {
+        cleanAllowedModules = [1, 2, 3, 4, 5, 33];
       }
 
       const newUser = await User.create({
@@ -374,8 +380,8 @@ export const adminUserController = {
         displayName: displayName.trim(),
         fullName: displayName.trim(),
         name: displayName.trim(),
-        role: role === "Admin" ? "Admin" : "Staff",
-        adminRole: role === "Admin" ? "Admin" : "Staff",
+        role: finalRole,
+        adminRole: finalRole as any,
         department: department.trim(),
         allowedModules: cleanAllowedModules,
         passwordHash,

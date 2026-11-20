@@ -495,15 +495,16 @@ export const authenticateUser = async (
       return;
     }
 
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid authentication token.",
+    let user: IUser | null = null;
+    if (mongoose.Types.ObjectId.isValid(userId)) {
+      user = await User.findById(userId);
+    }
+    if (!user) {
+      user = await User.findOne({
+        $or: [{ userId: userId }, { username: userId }, { email: userId }],
       });
-      return;
     }
 
-    const user = await User.findById(userId);
     if (!user) {
       res.status(401).json({
         success: false,

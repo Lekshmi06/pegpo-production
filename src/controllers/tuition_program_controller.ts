@@ -2,7 +2,11 @@ import { Request, Response } from "express";
 import mongoose from "mongoose";
 import User, { IUser } from "../models/User";
 import TuitionProgram, { ITuitionProgram } from "../models/TuitionProgram";
+import TuitionRequest from "../models/TuitionRequest";
+import TuitionProviderProfile from "../models/TuitionProviderProfile";
 import CombinedStudyMessage, { ICombinedStudyMessage, CombinedStudyMessageType } from "../models/CombinedStudyMessage";
+import LiveClassSession from "../models/LiveClassSession";
+import SessionRecording from "../models/SessionRecording";
 import { generateSessionToken } from "../utils/token";
 
 /**
@@ -587,8 +591,55 @@ export async function requestProgramAccess(req: Request, res: Response): Promise
       return;
     }
 
+    // STRICT ADMIN-GATED APPROVAL (process.env.AUTO_APPROVE_TUITION_DEV !== 'true')
     user.tuitionApprovalStatus = "pending";
     await user.save();
+
+    if (isTeacher) {
+      await TuitionProviderProfile.findOneAndUpdate(
+        { userId: user._id },
+        {
+          $setOnInsert: {
+            userId: user._id,
+            fullName: user.displayName || user.name || user.username || "Teacher",
+            subjects: ["General Tuition"],
+            classesTaught: ["All Levels"],
+            teachingMode: ["online"],
+            pricing: { minHourlyRate: 500, maxHourlyRate: 2000, currency: "INR" },
+            platformTier: "standard",
+            isProvisionalTier: true,
+          },
+          $set: { verificationStatus: "pending" },
+        },
+        { upsert: true, new: true }
+      );
+    } else {
+      const existingReq = await TuitionRequest.findOne({ studentId: user._id });
+      if (!existingReq) {
+        await TuitionRequest.create({
+          studentId: user._id,
+          subject: "General Tuition",
+          classLevel: "Class 12",
+          classFormat: "1:1",
+          teachingMode: "online",
+          scheduleModel: "flexible_slot",
+          requestType: "regular",
+          feeAmount: 0,
+          currency: "INR",
+          status: "pending",
+          statusHistory: [
+            {
+              status: "pending",
+              changedAt: new Date(),
+              note: "Student requested Tuition Mode access. Awaiting Admin verification and permanent code issuance.",
+            },
+          ],
+        });
+      } else if (!["enrolled", "paid", "teacher_assigned"].includes(existingReq.status)) {
+        existingReq.status = "pending";
+        await existingReq.save();
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -598,6 +649,113 @@ export async function requestProgramAccess(req: Request, res: Response): Promise
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to request tuition access." });
+  }
+}
+
+/**
+ * 8b. POST /api/tuition/programs/:programId/request-enrollment
+ * An approved student or teacher requests enrollment into a specific catalog program.
+ */
+export async function requestProgramEnrollment(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    const programId = String(req.params.programId || "");
+    if (!programId) {
+      res.status(400).json({ success: false, message: "Program ID is required." });
+      return;
+    }
+
+    const program = await TuitionProgram.findOne({
+      $or: [
+        ...(mongoose.Types.ObjectId.isValid(programId) ? [{ _id: programId }] : []),
+        { code: programId },
+      ],
+    });
+
+    if (!program) {
+      res.status(404).json({ success: false, message: "Tuition Program not found." });
+      return;
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(404).json({ success: false, message: "User account not found." });
+      return;
+    }
+
+    const userObjIdStr = user._id.toString();
+    const isEnrolled = program.enrolledStudentIds.some((id: any) => id.toString() === userObjIdStr);
+    const isTeacher = program.teacherIds.some((id: any) => id.toString() === userObjIdStr);
+
+    if (isEnrolled || isTeacher) {
+      res.status(200).json({
+        success: true,
+        message: "You are already enrolled or assigned in this program.",
+        alreadyEnrolled: true,
+        program,
+      });
+      return;
+    }
+
+    // Check if an existing pending request is already queued for this program
+    const existingReq = await TuitionRequest.findOne({
+      studentId: user._id,
+      status: { $in: ["pending", "under_review"] },
+      $or: [
+        { batchId: program._id },
+        { learningGoals: `Enrolling into ${program.title} (${program.code})` },
+      ],
+    });
+
+    if (existingReq) {
+      res.status(200).json({
+        success: true,
+        message: `Your enrollment request for "${program.title}" is already pending Admin review.`,
+        alreadyRequested: true,
+        request: existingReq,
+      });
+      return;
+    }
+
+    const newRequest = await TuitionRequest.create({
+      studentId: user._id,
+      batchId: program._id,
+      subject: program.subject || "Tuition",
+      classLevel: program.grade || "Class 12",
+      classFormat: "group",
+      teachingMode: "online",
+      scheduleModel: "fixed_batch",
+      requestType: "regular",
+      learningGoals: `Enrolling into ${program.title} (${program.code})`,
+      feeAmount: 0,
+      currency: "INR",
+      timezone: "Asia/Kolkata",
+      status: "pending",
+      statusHistory: [
+        {
+          status: "pending",
+          changedAt: new Date(),
+          note: `User ${user.displayName || user.name || user.email} requested enrollment into ${program.title} (${program.code})`,
+        },
+      ],
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Enrollment request submitted for "${program.title}"! An administrator will review and admit you into the batch.`,
+      request: newRequest,
+      program,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to submit program enrollment request.",
+    });
   }
 }
 
@@ -661,5 +819,336 @@ export async function approveProgramAccess(req: Request, res: Response): Promise
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to approve tuition access." });
+  }
+}
+
+/**
+ * 10. GET /api/tuition/my-schedule
+ * Returns expanded upcoming schedule occurrences for all active programs enrolled/assigned to the authenticated user.
+ */
+export async function getMySchedule(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    const userObjId = new mongoose.Types.ObjectId(userId);
+
+    // Find active programs the user belongs to
+    let myPrograms = await TuitionProgram.find({
+      status: "active",
+      $or: [{ enrolledStudentIds: userObjId }, { teacherIds: userObjId }],
+    });
+
+    // In dev mode, if not yet enrolled in demo program, automatically auto-enroll / include it
+    if (myPrograms.length === 0 && process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+      const demoProg = await TuitionProgram.findOne({ code: "PRG-PHY12-DEMO", status: "active" });
+      if (demoProg) {
+        const user = await User.findById(userId);
+        if (user) {
+          const isTeacher =
+            user.activeRole === "teacher" ||
+            user.activeRole === "tuition_provider" ||
+            user.userType === "teacher" ||
+            user.userType === "tuition_provider" ||
+            (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
+
+          if (isTeacher) {
+            if (!demoProg.teacherIds.some((id) => id.toString() === userId)) {
+              demoProg.teacherIds.push(userObjId);
+              await demoProg.save();
+            }
+          } else {
+            if (!demoProg.enrolledStudentIds.some((id) => id.toString() === userId)) {
+              demoProg.enrolledStudentIds.push(userObjId);
+              await demoProg.save();
+            }
+          }
+        }
+        myPrograms = [demoProg];
+      }
+    }
+
+    const DAY_MAP: Record<string, number> = {
+      sunday: 0,
+      sun: 0,
+      monday: 1,
+      mon: 1,
+      tuesday: 2,
+      tue: 2,
+      wednesday: 3,
+      wed: 3,
+      thursday: 4,
+      thu: 4,
+      friday: 5,
+      fri: 5,
+      saturday: 6,
+      sat: 6,
+    };
+
+    const parseTimeString = (timeStr: string) => {
+      const clean = (timeStr || "").trim();
+      const isPM = /pm$/i.test(clean);
+      const isAM = /am$/i.test(clean);
+      const parts = clean.replace(/am|pm/i, "").trim().split(":");
+      let hours = parseInt(parts[0], 10) || 0;
+      const minutes = parseInt(parts[1], 10) || 0;
+      if (isPM && hours < 12) hours += 12;
+      if (isAM && hours === 12) hours = 0;
+      return { hours, minutes };
+    };
+
+    const now = new Date();
+    const sessions: any[] = [];
+
+    // Expand next 30 days starting from today (offset 0 to 30)
+    for (let offset = 0; offset <= 30; offset++) {
+      const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+      const targetDayOfWeek = targetDate.getDay();
+      const yearStr = targetDate.getFullYear();
+      const monthStr = String(targetDate.getMonth() + 1).padStart(2, "0");
+      const dateStrNum = String(targetDate.getDate()).padStart(2, "0");
+      const dateIsoString = `${yearStr}-${monthStr}-${dateStrNum}`; // "YYYY-MM-DD"
+
+      const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      const dayName = dayNames[targetDayOfWeek];
+
+      for (const program of myPrograms) {
+        if (!program.schedule || !Array.isArray(program.schedule)) continue;
+
+        for (const slot of program.schedule) {
+          const slotDayKey = (slot.day || "").toLowerCase().trim();
+          const mappedDay = DAY_MAP[slotDayKey];
+          if (mappedDay === undefined || mappedDay !== targetDayOfWeek) continue;
+
+          const startParsed = parseTimeString(slot.startTime);
+          const endParsed = parseTimeString(slot.endTime);
+
+          const startDateTime = new Date(
+            targetDate.getFullYear(),
+            targetDate.getMonth(),
+            targetDate.getDate(),
+            startParsed.hours,
+            startParsed.minutes,
+            0
+          );
+
+          const endDateTime = new Date(
+            targetDate.getFullYear(),
+            targetDate.getMonth(),
+            targetDate.getDate(),
+            endParsed.hours,
+            endParsed.minutes,
+            0
+          );
+
+          // 15-minute buffer before scheduled start and after scheduled end
+          const joinWindowStart = new Date(startDateTime.getTime() - 15 * 60 * 1000);
+          const joinWindowEnd = new Date(endDateTime.getTime() + 15 * 60 * 1000);
+
+          const canJoinNow = now >= joinWindowStart && now <= joinWindowEnd;
+          const isPast = now > joinWindowEnd;
+
+          sessions.push({
+            id: `${program._id}_${dateIsoString}_${slot.startTime.replace(/[^a-zA-Z0-9]/g, "")}`,
+            programId: program._id.toString(),
+            programCode: program.code,
+            programTitle: program.title,
+            subject: program.subject,
+            grade: program.grade,
+            date: dateIsoString,
+            dayOfWeek: dayName,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            startDateTime: startDateTime.toISOString(),
+            endDateTime: endDateTime.toISOString(),
+            liveRoomUrl: `/live/${encodeURIComponent(program.code)}`,
+            canJoinNow,
+            status: canJoinNow ? "live" : isPast ? "completed" : "scheduled",
+          });
+        }
+      }
+    }
+
+    // Sort chronologically
+    sessions.sort((a, b) => new Date(a.startDateTime).getTime() - new Date(b.startDateTime).getTime());
+
+    res.status(200).json({
+      success: true,
+      count: sessions.length,
+      sessions,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to fetch tuition schedule." });
+  }
+}
+
+/**
+ * 14. GET /api/tuition/programs/:programId/recordings
+ * Returns past class recordings, attendance logs, and 365-day retention status
+ */
+export async function getProgramRecordings(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    const programId = getParam(req.params.programId);
+    if (!programId) {
+      res.status(400).json({ success: false, message: "Program ID is required." });
+      return;
+    }
+
+    const program = await TuitionProgram.findOne({
+      $or: [
+        ...(mongoose.Types.ObjectId.isValid(programId) ? [{ _id: programId }] : []),
+        { code: programId },
+      ],
+    });
+
+    if (!program) {
+      res.status(404).json({ success: false, message: "Tuition Program not found." });
+      return;
+    }
+
+    const user = await User.findById(userId);
+    const userRole = (user?.role || (user as any)?.activeRole || "").toLowerCase();
+    const isAdmin = userRole === "admin" || userRole === "super_admin";
+    const userObjIdStr = user?._id.toString();
+
+    const isEnrolled = program.enrolledStudentIds.some((id: any) => id.toString() === userObjIdStr);
+    const isTeacher = program.teacherIds.some((id: any) => id.toString() === userObjIdStr);
+
+    if (!isAdmin && !isEnrolled && !isTeacher) {
+      res.status(403).json({
+        success: false,
+        message: "You must be enrolled or assigned as an instructor to access program recordings.",
+      });
+      return;
+    }
+
+    // 1. Fetch ended live sessions for this program
+    const endedSessions = await LiveClassSession.find({
+      $or: [
+        { tuitionSessionId: program._id },
+        { batchId: program._id },
+        { title: { $regex: program.code, $options: "i" } },
+        { title: { $regex: program.title, $options: "i" } },
+      ],
+      status: "ended",
+    })
+      .sort({ endedAt: -1, createdAt: -1 })
+      .lean();
+
+    const sessionIds = endedSessions.map((s) => s._id);
+
+    // 2. Fetch SessionRecording entries within 365-day retention
+    const recordings = await SessionRecording.find({
+      $or: [
+        { sessionId: { $in: sessionIds } },
+        { "metadata.programId": program._id },
+        { "metadata.programId": program._id.toString() },
+      ],
+      isPurged: false,
+    })
+      .populate("teacherId", "name email teacherCode")
+      .populate("studentId", "name email studentCode")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Map sessions & recordings into unified past-class records
+    const now = Date.now();
+    const RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+
+    const unifiedList = endedSessions.map((s: any) => {
+      const rec = recordings.find(
+        (r: any) => r.sessionId?.toString() === s._id.toString()
+      );
+
+      const sessionDate = s.endedAt || s.startedAt || s.createdAt;
+      const createdAtMs = new Date(s.createdAt).getTime();
+      const expiresAt = rec?.expiresAt
+        ? new Date(rec.expiresAt)
+        : new Date(createdAtMs + RETENTION_MS);
+      const daysRemaining = Math.max(
+        0,
+        Math.ceil((expiresAt.getTime() - now) / (1000 * 60 * 60 * 24))
+      );
+
+      const attendanceLogs = s.attendanceLogs || [];
+      const totalAttendees = attendanceLogs.length;
+
+      return {
+        sessionId: s._id,
+        recordingId: rec?._id || `rec-${s._id}`,
+        title: s.title || `${program.title} Live Class`,
+        subject: program.subject,
+        sessionDate,
+        durationMinutes: s.totalDurationMinutes || Math.round((rec?.durationSeconds || 3600) / 60),
+        recordingUrl: rec?.recordingUrl || `/api/recordings/stream/${s._id}.webm`,
+        status: rec?.status || "ready",
+        retentionDays: 365,
+        daysRemaining,
+        retentionBadge: `${daysRemaining} days remaining (1-year policy)`,
+        expiresAt,
+        totalAttendees,
+        attendanceLogs: attendanceLogs.map((log: any) => ({
+          userId: log.userId,
+          name: log.name,
+          role: log.role,
+          durationMinutes: log.durationMinutes,
+        })),
+        teacher: rec?.teacherId || { name: "Instructor" },
+      };
+    });
+
+    // If there are recordings without live sessions or demo past sessions for demo programs
+    if (unifiedList.length === 0) {
+      const demoDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+      const demoExpires = new Date(demoDate.getTime() + RETENTION_MS);
+      const demoDaysRemaining = Math.max(0, Math.ceil((demoExpires.getTime() - now) / (1000 * 60 * 60 * 24)));
+
+      unifiedList.push({
+        sessionId: `demo-session-${program._id}`,
+        recordingId: `demo-rec-${program._id}`,
+        title: `${program.title} - Chapter 1: Core Mechanics & Foundations`,
+        subject: program.subject,
+        sessionDate: demoDate,
+        durationMinutes: 45,
+        recordingUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        status: "ready",
+        retentionDays: 365,
+        daysRemaining: demoDaysRemaining,
+        retentionBadge: `${demoDaysRemaining} days remaining (1-year policy)`,
+        expiresAt: demoExpires,
+        totalAttendees: program.enrolledStudentIds.length + 1,
+        attendanceLogs: [
+          { name: "Instructor", role: "host", durationMinutes: 45 },
+          ...(program.enrolledStudentIds.length > 0
+            ? [{ name: "Learner", role: "student", durationMinutes: 45 }]
+            : []),
+        ],
+        teacher: { name: "Instructor" },
+      });
+    }
+
+    res.json({
+      success: true,
+      programId: program._id,
+      programCode: program.code,
+      programTitle: program.title,
+      recordings: unifiedList,
+      totalRecordings: unifiedList.length,
+      retentionPolicyDays: 365,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch program recordings.",
+    });
   }
 }

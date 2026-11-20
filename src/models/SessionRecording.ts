@@ -18,7 +18,7 @@ export interface ISessionRecording extends Document {
   fileSizeBytes: number;
   durationSeconds: number;
   mimeType: string;
-  accessLevel: "admin_only";
+  accessLevel: "admin_only" | "program_members" | "public";
   status: SessionRecordingStatus;
   retentionDays: number;
   expiresAt: Date; // 365 days from recording creation
@@ -87,8 +87,8 @@ const sessionRecordingSchema = new Schema<ISessionRecording>(
     },
     accessLevel: {
       type: String,
-      enum: ["admin_only"],
-      default: "admin_only",
+      enum: ["admin_only", "program_members", "public"],
+      default: "program_members",
       required: true,
     },
     status: {

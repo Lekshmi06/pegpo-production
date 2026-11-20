@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import User, { IUser } from "../models/User";
 import { getJwtSecret } from "../utils/token";
 
@@ -7,46 +8,51 @@ const FALLBACK_JWT_SECRET = "curemaso-super-secret-jwt-key-2026-secure-auth";
 
 export function isSuperAdmin(role?: string): boolean {
   if (!role) return false;
-  return role === "Super Admin" || role === "SUPER_ADMIN";
+  const r = role.trim().toLowerCase();
+  return r === "super admin" || r === "super_admin" || r === "platform super admin";
 }
 
 export function isAdmin(role?: string): boolean {
   if (!role) return false;
-  return role === "Admin" || role === "ADMIN";
+  const r = role.trim().toLowerCase();
+  return r === "admin" || r === "general admin" || r === "administrator";
 }
 
 export function isTuitionOperationsAdmin(role?: string): boolean {
   if (!role) return false;
-  return role === "Tuition Operations Admin";
+  const r = role.trim().toLowerCase();
+  return r === "tuition operations admin" || r === "tuition admin" || r === "tuition_admin";
 }
 
 export function isStaff(role?: string): boolean {
   if (!role) return false;
+  const r = role.trim().toLowerCase();
   return (
-    role === "Staff" ||
-    role === "STAFF" ||
-    role === "USER" ||
-    role === "user" ||
-    role === "Manager" ||
-    role === "HR" ||
-    role === "Finance" ||
-    role === "Marketing" ||
-    role === "Support"
+    r === "staff" ||
+    r === "user" ||
+    r === "operations staff" ||
+    r === "manager" ||
+    r === "hr" ||
+    r === "finance" ||
+    r === "marketing" ||
+    r === "support"
   );
 }
 
 export function generateToken(user: any): string {
   const secret = getJwtSecret();
+  const mongoId = (user._id || "").toString();
   return jwt.sign(
     {
-      id: user.id,
-      _id: user._id ? user._id.toString() : undefined,
-      userId: user.userId,
+      id: typeof user.id === "number" ? user.id : undefined,
+      _id: mongoId,
+      userId: mongoId || user.userId,
+      codeUserId: user.userId || mongoId,
       username: user.username,
       email: user.email,
       displayName: user.displayName || user.fullName || user.username || "User",
       role: user.adminRole || user.role || user.activeRole || "Staff",
-      adminRole: user.adminRole,
+      adminRole: user.adminRole || user.role,
       tokenVersion: user.tokenVersion || 0,
       allowedModules: user.allowedModules || [],
     },
@@ -99,10 +105,17 @@ export async function verifyAuth(
 
     // Look up fresh user from database
     const orClauses: any[] = [];
-    if (decoded._id) orClauses.push({ _id: decoded._id });
-    if (decoded.id !== undefined && decoded.id !== null) orClauses.push({ id: decoded.id });
+    if (decoded._id && mongoose.Types.ObjectId.isValid(decoded._id)) {
+      orClauses.push({ _id: decoded._id });
+    }
+    if (decoded.id !== undefined && decoded.id !== null && typeof decoded.id === "number") {
+      orClauses.push({ id: decoded.id });
+    }
     if (decoded.username) orClauses.push({ username: decoded.username });
-    if (decoded.userId) orClauses.push({ userId: decoded.userId });
+    if (decoded.codeUserId) orClauses.push({ userId: decoded.codeUserId });
+    else if (decoded.userId && !mongoose.Types.ObjectId.isValid(decoded.userId)) {
+      orClauses.push({ userId: decoded.userId });
+    }
     if (decoded.email) orClauses.push({ email: decoded.email });
 
     const user = await User.findOne(

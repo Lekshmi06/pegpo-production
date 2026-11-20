@@ -4,6 +4,7 @@ import TeacherPayout, {
   TeacherPayoutStatus,
 } from "../models/TeacherPayout";
 import TuitionSession from "../models/TuitionSession";
+import LiveClassSession from "../models/LiveClassSession";
 import TuitionAttendance from "../models/TuitionAttendance";
 import TuitionProviderProfile from "../models/TuitionProviderProfile";
 import { resolveTuitionPricing } from "./tuition_pricing_service";
@@ -219,9 +220,48 @@ export async function adminDisbursePayout(
  * Teacher: View own earnings ledger.
  */
 export async function getTeacherEarningsLedger(teacherId: string) {
-  const payouts = await TeacherPayout.find({ teacherId: new mongoose.Types.ObjectId(teacherId) })
+  let payouts = await TeacherPayout.find({ teacherId: new mongoose.Types.ObjectId(teacherId) })
     .populate("sessionId", "title sessionDate startTime endTime isTrial")
     .sort({ createdAt: -1 });
+
+  // If no payouts recorded yet, check for concluded LiveClassSessions
+  if (payouts.length === 0) {
+    const endedSessions = await LiveClassSession.find({
+      hostId: new mongoose.Types.ObjectId(teacherId),
+      status: "ended",
+    });
+
+    for (const session of endedSessions) {
+      const durationHours = Math.max(0.5, Number(((session.totalDurationMinutes || 60) / 60).toFixed(2)));
+      const payoutRate = 600;
+      const totalAmount = Math.round(durationHours * payoutRate);
+      try {
+        await TeacherPayout.create({
+          teacherId: new mongoose.Types.ObjectId(teacherId),
+          sessionId: session._id,
+          isTrial: false,
+          subject: session.title,
+          durationHours,
+          payoutRate,
+          totalAmount,
+          currency: "INR",
+          attendanceVerified: true,
+          status: "approved",
+          statusHistory: [
+            {
+              status: "approved",
+              changedAt: new Date(),
+              note: "Auto-synced from concluded live classroom session",
+            },
+          ],
+        });
+      } catch (e) {}
+    }
+
+    payouts = await TeacherPayout.find({ teacherId: new mongoose.Types.ObjectId(teacherId) })
+      .populate("sessionId", "title sessionDate startTime endTime isTrial")
+      .sort({ createdAt: -1 });
+  }
 
   const totalEarned = payouts
     .filter((p) => p.status === "disbursed")
