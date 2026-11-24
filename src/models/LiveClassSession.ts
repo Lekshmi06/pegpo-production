@@ -26,8 +26,17 @@ export interface ILiveChatMessage {
   id: string;
   senderId: string;
   senderName: string;
-  senderRole: "host" | "student" | "teacher";
+  senderRole: "host" | "student" | "teacher" | string;
   text: string;
+  messageType?: "text" | "voice" | "attachment" | string;
+  voiceUrl?: string;
+  voiceDuration?: number;
+  attachment?: {
+    name?: string;
+    url?: string;
+    fileType?: string;
+    size?: number;
+  };
   timestamp: Date;
 }
 
@@ -188,7 +197,16 @@ const liveClassSessionSchema = new Schema<ILiveClassSession>(
         senderId: { type: String, required: true },
         senderName: { type: String, required: true },
         senderRole: { type: String, default: "student" },
-        text: { type: String, required: true, trim: true },
+        text: { type: String, default: "", trim: true },
+        messageType: { type: String, default: "text" },
+        voiceUrl: { type: String },
+        voiceDuration: { type: Number },
+        attachment: {
+          name: { type: String },
+          url: { type: String },
+          fileType: { type: String },
+          size: { type: Number },
+        },
         timestamp: { type: Date, default: Date.now },
       },
     ],

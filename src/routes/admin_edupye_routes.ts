@@ -17,6 +17,9 @@ router.put("/content/:key", authenticateUser, requireTuitionPlatformAdmin, conte
 // Module 33: Tuition Operations Hub - Teachers
 router.get("/tuition/teachers", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.getTuitionTeachers);
 router.patch("/tuition/teachers/:id/verify", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.verifyTeacher);
+router.patch("/tuition/teachers/:id/interview", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.scheduleTeacherInterview);
+router.patch("/tuition/teachers/:id/accept", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.acceptTeacher);
+router.patch("/tuition/teachers/:id/reject", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.rejectTeacher);
 
 // Module 33: Tuition Operations Hub - Students
 router.get("/tuition/students", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.getTuitionStudents);
@@ -32,6 +35,11 @@ router.get("/tuition/programs", authenticateUser, requireTuitionPlatformAdmin, a
 router.post("/tuition/programs", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.createProgram);
 router.put("/tuition/programs/:id", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.updateProgram);
 router.delete("/tuition/programs/:id", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.deleteProgram);
+router.post("/tuition/programs/:id/teachers", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.assignTeachersToProgram);
+router.delete("/tuition/programs/:id/teachers/:teacherId", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.removeTeacherFromProgram);
+router.post("/tuition/programs/:id/students", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.enrollStudentsInProgram);
+router.delete("/tuition/programs/:id/students/:studentId", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.removeStudentFromProgram);
+router.put("/tuition/programs/:id/roster", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.updateProgramRoster);
 
 // Module 33: Teacher Payouts
 router.get("/tuition/payouts", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.getPayouts);

@@ -288,6 +288,53 @@ export async function verifySessionAccess(
     }
   }
 
+  // 4. Check or create ad-hoc live class session for named demo/sandbox rooms
+  if (!session) {
+    session = await LiveClassSession.findOne({
+      $or: [
+        { title: new RegExp(`^${sessionId}$`, "i") },
+        { title: new RegExp(`^Classroom: ${sessionId}$`, "i") },
+        { sessionType: "smartboard_ad_hoc", status: "live" },
+      ],
+      status: "live",
+    });
+
+    if (!session) {
+      const userDoc = await User.findById(userId);
+      const isTeacherOrProvider = userDoc?.roles?.some((r: string) =>
+        ["teacher", "tuition_provider", "institution", "admin", "super_admin"].includes(r)
+      );
+
+      if (isTeacherOrProvider) {
+        session = await LiveClassSession.create({
+          title: sessionId.startsWith("class-")
+            ? `Live Class ${sessionId.replace("class-", "#")}`
+            : `Classroom: ${sessionId}`,
+          hostId: new mongoose.Types.ObjectId(userId),
+          hostRole: "teacher",
+          status: "live",
+          sessionType: "smartboard_ad_hoc",
+          authorizedStudentIds: [],
+          activeParticipants: [],
+          settings: { allowMicrophone: true, allowCamera: true, allowScreenShare: true, allowChat: true },
+          startedAt: new Date(),
+        });
+      } else {
+        const anyActiveLive = await LiveClassSession.findOne({ status: "live" }).sort({ startedAt: -1 });
+        if (anyActiveLive) {
+          session = anyActiveLive;
+        } else {
+          return {
+            authorized: true,
+            isHost: false,
+            isWaiting: true,
+            error: "WAITING_FOR_TEACHER",
+          };
+        }
+      }
+    }
+  }
+
   if (!session) {
     return { authorized: false, isHost: false, error: "Classroom session not found" };
   }
@@ -301,12 +348,38 @@ export async function verifySessionAccess(
     return { authorized: true, isHost: true, session };
   }
 
+  // Check if user is in program teachers or enrolled students
+  if (session.tuitionSessionId || session.batchId) {
+    const progId = session.tuitionSessionId || session.batchId;
+    const program = await TuitionProgram.findById(progId);
+    if (program) {
+      const isProgTeacher = program.teacherIds?.some((id: any) => id.toString() === userId);
+      const isProgStudent = program.enrolledStudentIds?.some((id: any) => id.toString() === userId);
+      if (isProgTeacher || isProgStudent) {
+        if (isProgStudent && !session.authorizedStudentIds.some((id: any) => id.toString() === userId)) {
+          session.authorizedStudentIds.push(new mongoose.Types.ObjectId(userId));
+          await session.save().catch(() => {});
+        }
+        return { authorized: true, isHost: Boolean(isProgTeacher), session };
+      }
+    }
+  }
+
   // Check if user is in authorizedStudentIds
   const isAuthorizedStudent = session.authorizedStudentIds.some(
     (id: mongoose.Types.ObjectId) => id.toString() === userId
   );
 
   if (isAuthorizedStudent) {
+    return { authorized: true, isHost: false, session };
+  }
+
+  // If no explicit student IDs set, or ad-hoc smartboard session, allow authenticated users
+  if (
+    session.sessionType === "smartboard_ad_hoc" ||
+    !session.authorizedStudentIds ||
+    session.authorizedStudentIds.length === 0
+  ) {
     return { authorized: true, isHost: false, session };
   }
 

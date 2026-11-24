@@ -32,6 +32,29 @@ const roomWhiteboards = new Map<string, any[]>();
 export function setupClassroomSignallingServer(server: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
+  // 25-second WebSocket ping/pong heartbeat interval for Render reverse proxy & NAT keepalive
+  const HEARTBEAT_INTERVAL_MS = 25000;
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((wsClient: any) => {
+      if (wsClient.readyState !== WebSocket.OPEN) return;
+      if (wsClient.isAlive === false) {
+        wsClient.terminate();
+        return;
+      }
+      wsClient.isAlive = false;
+      try {
+        wsClient.ping();
+        wsClient.send(JSON.stringify({ type: "heartbeat", timestamp: Date.now() }));
+      } catch (err) {
+        wsClient.terminate();
+      }
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+
+  wss.on("close", () => {
+    clearInterval(heartbeatInterval);
+  });
+
   server.on("upgrade", async (request, socket, head) => {
     try {
       const parsedUrl = url.parse(request.url || "", true);
@@ -92,6 +115,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
     sessionId: string;
   }) => {
     const { userId, name, role, sessionId } = clientData;
+
+    (ws as any).isAlive = true;
+    ws.on("pong", () => {
+      (ws as any).isAlive = true;
+    });
 
     if (!rooms.has(sessionId)) {
       rooms.set(sessionId, new Map());
@@ -186,6 +214,7 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
     ws.on("message", async (data: string) => {
       try {
+        (ws as any).isAlive = true;
         const raw = data.toString();
         if (raw.length > 65536) {
           ws.send(JSON.stringify({ type: "error", message: "Signalling payload exceeds size limit" }));
@@ -274,10 +303,22 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
           }
 
           case "chat-message": {
-            if (typeof message.text === "string" && message.text.trim()) {
-              const cleanText = message.text.trim().slice(0, 1000);
+            const hasText = typeof message.text === "string" && Boolean(message.text.trim());
+            const hasVoice = Boolean(message.voiceUrl || message.audioUrl);
+            const hasAttachment = Boolean(message.attachment && (message.attachment.url || message.attachment.name));
+
+            if (hasText || hasVoice || hasAttachment) {
+              const cleanText = hasText
+                ? message.text.trim().slice(0, 2000)
+                : hasVoice
+                ? "🎙️ Voice Note"
+                : "📎 Attachment";
               const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
               const now = new Date();
+              const messageType = message.messageType || (hasVoice ? "voice" : hasAttachment ? "attachment" : "text");
+              const voiceUrl = message.voiceUrl || message.audioUrl || undefined;
+              const voiceDuration = typeof message.voiceDuration === "number" ? message.voiceDuration : undefined;
+              const attachment = message.attachment || undefined;
 
               broadcastToRoom(sessionId, {
                 type: "chat-message",
@@ -286,6 +327,10 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                 senderName: name,
                 senderRole: role,
                 text: cleanText,
+                messageType,
+                voiceUrl,
+                voiceDuration,
+                attachment,
                 timestamp: now.toISOString(),
               });
 
@@ -298,6 +343,10 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                     senderName: name,
                     senderRole: role,
                     text: cleanText,
+                    messageType,
+                    voiceUrl,
+                    voiceDuration,
+                    attachment,
                     timestamp: now,
                   },
                 },

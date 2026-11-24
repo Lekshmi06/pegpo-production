@@ -14,7 +14,10 @@ import { generateSessionToken } from "../utils/token";
 /**
  * Enriches raw teacher user documents with instructor bio, avatar, qualifications and credentials
  */
-async function enrichTeachers(teacherDocs: any[]): Promise<any[]> {
+async function enrichTeachers(
+  teacherDocs: any[],
+  teacherSubjects?: Array<{ teacherId: any; subject: string }>
+): Promise<any[]> {
   if (!teacherDocs || teacherDocs.length === 0) return [];
   const teacherUserIds = teacherDocs.map((t) => (t._id || t));
   const [providerProfiles, teacherProfiles] = await Promise.all([
@@ -24,6 +27,16 @@ async function enrichTeachers(teacherDocs: any[]): Promise<any[]> {
 
   const providerMap = new Map(providerProfiles.map((p) => [p.userId.toString(), p]));
   const teacherProfileMap = new Map(teacherProfiles.map((tp) => [tp.userId.toString(), tp]));
+
+  const subjectMap = new Map<string, string>();
+  if (Array.isArray(teacherSubjects)) {
+    teacherSubjects.forEach((ts) => {
+      if (ts && ts.teacherId) {
+        const tid = (ts.teacherId._id || ts.teacherId).toString();
+        subjectMap.set(tid, ts.subject);
+      }
+    });
+  }
 
   return teacherDocs.map((t) => {
     const uid = (t._id || t).toString();
@@ -50,6 +63,8 @@ async function enrichTeachers(teacherDocs: any[]): Promise<any[]> {
         ? tProfile.subjects
         : [];
 
+    const assignedSubject = subjectMap.get(uid) || (subjects.length > 0 ? subjects[0] : "");
+
     return {
       _id: uid,
       name,
@@ -61,6 +76,8 @@ async function enrichTeachers(teacherDocs: any[]): Promise<any[]> {
       qualifications,
       experienceYears,
       subjects,
+      assignedSubject,
+      programSubject: assignedSubject,
       platformTier: pProfile?.platformTier || "standard",
       userType: "teacher",
     };
@@ -153,22 +170,30 @@ export async function codeLogin(req: Request, res: Response): Promise<void> {
     // Optional Program Enrollment Check
     let programContext: any = undefined;
     if (programId) {
-      if (!mongoose.Types.ObjectId.isValid(programId)) {
-        res.status(400).json({ success: false, message: "Invalid program ID format." });
-        return;
+      let program: any = null;
+      if (mongoose.Types.ObjectId.isValid(programId)) {
+        program = await TuitionProgram.findById(programId);
+      }
+      if (!program) {
+        program = await TuitionProgram.findOne({ code: programId });
       }
 
-      const program = await TuitionProgram.findById(programId);
       if (!program) {
         res.status(404).json({ success: false, message: "Tuition program not found." });
         return;
       }
 
       const userIdStr = user._id.toString();
-      const isEnrolledStudent = program.enrolledStudentIds.some((id) => id.toString() === userIdStr);
-      const isAssignedTeacher = program.teacherIds.some((id) => id.toString() === userIdStr);
+      const isEnrolledStudent = program.enrolledStudentIds.some((id: any) => (id._id ? id._id.toString() : id.toString()) === userIdStr);
+      const isAssignedTeacher = program.teacherIds.some((id: any) => (id._id ? id._id.toString() : id.toString()) === userIdStr);
+      const isAdminUser =
+        user.userType === "institution" ||
+        user.role === "institution" ||
+        user.role === "admin" ||
+        user.role === "super_admin" ||
+        Boolean(user.adminRole);
 
-      if (!isEnrolledStudent && !isAssignedTeacher && user.userType !== "institution") {
+      if (!isEnrolledStudent && !isAssignedTeacher && !isAdminUser) {
         res.status(403).json({
           success: false,
           message: "User is not enrolled or assigned to this tuition program.",
@@ -182,7 +207,7 @@ export async function codeLogin(req: Request, res: Response): Promise<void> {
         code: program.code,
         subject: program.subject,
         grade: program.grade,
-        roleInProgram: isAssignedTeacher ? "teacher" : "student",
+        roleInProgram: isAssignedTeacher || isAdminUser ? "teacher" : "student",
       };
     }
 
@@ -237,7 +262,7 @@ export async function getTuitionPrograms(req: Request, res: Response): Promise<v
       return Promise.all(
         programsList.map(async (p) => {
           const pObj = p.toObject ? p.toObject() : p;
-          const teachers = await enrichTeachers(p.teacherIds || []);
+          const teachers = await enrichTeachers(p.teacherIds || [], p.teacherSubjects);
           return {
             ...pObj,
             teachers,
@@ -302,14 +327,17 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
       return;
     }
 
-    if (!mongoose.Types.ObjectId.isValid(programId)) {
-      res.status(400).json({ success: false, message: "Invalid program ID format." });
-      return;
+    let program: any = null;
+    if (mongoose.Types.ObjectId.isValid(programId)) {
+      program = await TuitionProgram.findById(programId)
+        .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+        .populate("enrolledStudentIds", "name email studentCode userType avatarUrl displayName fullName");
     }
-
-    const program = await TuitionProgram.findById(programId)
-      .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
-      .populate("enrolledStudentIds", "name email studentCode userType avatarUrl displayName fullName");
+    if (!program) {
+      program = await TuitionProgram.findOne({ code: programId })
+        .populate("teacherIds", "name email teacherCode userType avatarUrl displayName fullName")
+        .populate("enrolledStudentIds", "name email studentCode userType avatarUrl displayName fullName");
+    }
 
     if (!program) {
       res.status(404).json({ success: false, message: "Tuition program not found." });
@@ -319,7 +347,12 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
     const userIdStr = userId.toString();
     const isEnrolled = program.enrolledStudentIds.some((s: any) => (s._id || s).toString() === userIdStr);
     const isTeacher = program.teacherIds.some((t: any) => (t._id || t).toString() === userIdStr);
-    const isAdmin = (req.user as any)?.role === "institution" || (req.user as any)?.userType === "institution";
+    const isAdmin =
+      (req.user as any)?.role === "institution" ||
+      (req.user as any)?.userType === "institution" ||
+      (req.user as any)?.role === "admin" ||
+      (req.user as any)?.role === "super_admin" ||
+      Boolean((req.user as any)?.adminRole);
 
     if (!isEnrolled && !isTeacher && !isAdmin) {
       res.status(403).json({
@@ -330,7 +363,7 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
     }
 
     const [enrichedTeachers, enrichedStudents] = await Promise.all([
-      enrichTeachers(program.teacherIds),
+      enrichTeachers(program.teacherIds, program.teacherSubjects),
       enrichStudents(program.enrolledStudentIds, program.grade),
     ]);
 
@@ -354,6 +387,7 @@ export async function getProgramRoster(req: Request, res: Response): Promise<voi
       role: userRoleStr,
       teachers: enrichedTeachers,
       assignedTeachers: enrichedTeachers,
+      teacherSubjects: program.teacherSubjects || [],
       students: enrichedStudents,
       enrolledStudents: enrichedStudents,
       coStudents: enrichedStudents,

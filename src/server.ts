@@ -48,6 +48,9 @@ import { setupClassroomSignallingServer } from "./websocket/classroom_signalling
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Enable reverse proxy trust for Render, Vercel, and Cloudflare HTTPS/WSS reverse proxies
+app.set("trust proxy", 1);
+
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     if (!origin) return callback(null, true);

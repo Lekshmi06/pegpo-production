@@ -143,12 +143,135 @@ export const adminEdupyeController = {
           subjects,
           grades,
           assignedPrograms,
-          phone: prof?.contactPhone || null,
+          phone: t.phone || prof?.contactPhone || null,
+          qualifications: prof?.qualifications || [],
+          bio: prof?.bio || "",
+          demoLink: prof?.demoLink || "",
+          interviewStatus: prof?.interviewStatus || (approvalStatus === "approved" ? "approved" : "pending_interview"),
+          interviewDate: prof?.interviewDate || null,
+          interviewNotes: prof?.interviewNotes || "",
           createdAt: t.createdAt,
         };
       });
 
       res.status(200).json({ success: true, count: enriched.length, teachers: enriched });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * PATCH /api/admin/tuition/teachers/:id/interview
+   * Schedule interview for an applicant tutor
+   */
+  async scheduleTeacherInterview(req: Request, res: Response): Promise<void> {
+    try {
+      const teacherId = req.params.id;
+      const { interviewDate, interviewNotes } = req.body;
+
+      const user = await User.findById(teacherId);
+      if (!user) {
+        res.status(404).json({ success: false, message: "Teacher account not found." });
+        return;
+      }
+
+      const profile = await TuitionProviderProfile.findOneAndUpdate(
+        { userId: user._id },
+        {
+          interviewStatus: "interview_scheduled",
+          interviewDate: interviewDate ? new Date(interviewDate) : undefined,
+          interviewNotes: interviewNotes || "",
+        },
+        { new: true, upsert: true }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Interview scheduled successfully.",
+        profile,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * PATCH /api/admin/tuition/teachers/:id/accept
+   * Approve tutor, issue permanent TCH-XXXXXX code, and mark interview as approved
+   */
+  async acceptTeacher(req: Request, res: Response): Promise<void> {
+    try {
+      const teacherId = req.params.id;
+      const { notes } = req.body;
+
+      const user = await User.findById(teacherId);
+      if (!user) {
+        res.status(404).json({ success: false, message: "Teacher account not found." });
+        return;
+      }
+
+      const code = user.issuePermanentTuitionCode();
+      user.tuitionApprovalStatus = "approved";
+      await user.save();
+
+      await TuitionProviderProfile.findOneAndUpdate(
+        { userId: user._id },
+        {
+          interviewStatus: "approved",
+          verificationStatus: "verified",
+          verificationNotes: notes || "Tutor approved and issued code",
+          verifiedAt: new Date(),
+        },
+        { new: true, upsert: true }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: `Teacher approved and issued permanent code ${code}`,
+        teacherCode: code,
+        tuitionApprovalStatus: "approved",
+        interviewStatus: "approved",
+        user,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * PATCH /api/admin/tuition/teachers/:id/reject
+   * Reject tutor application
+   */
+  async rejectTeacher(req: Request, res: Response): Promise<void> {
+    try {
+      const teacherId = req.params.id;
+      const { reason } = req.body;
+
+      const user = await User.findById(teacherId);
+      if (!user) {
+        res.status(404).json({ success: false, message: "Teacher account not found." });
+        return;
+      }
+
+      user.tuitionApprovalStatus = "rejected";
+      await user.save();
+
+      await TuitionProviderProfile.findOneAndUpdate(
+        { userId: user._id },
+        {
+          interviewStatus: "rejected",
+          verificationStatus: "rejected",
+          verificationNotes: reason || "Application rejected",
+        },
+        { new: true, upsert: true }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Teacher application rejected.",
+        tuitionApprovalStatus: "rejected",
+        interviewStatus: "rejected",
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -331,15 +454,63 @@ export const adminEdupyeController = {
 
   /**
    * POST /api/admin/tuition/programs
-   * Create new Tuition Program
+   * Create new Tuition Program with multiple teachers and students
    */
   async createProgram(req: Request, res: Response): Promise<void> {
     try {
-      const { title, subject, grade, description, schedule, teacherIds, enrolledStudentIds, maxCapacity } = req.body;
+      const {
+        title,
+        subject,
+        grade,
+        description,
+        schedule,
+        teacherId,
+        teacherIds,
+        studentIds,
+        enrolledStudentIds,
+        teacherSubjects,
+        maxCapacity,
+      } = req.body;
+
       if (!title || !subject) {
         res.status(400).json({ success: false, message: "Title and subject are required." });
         return;
       }
+
+      const rawTeacherIds = Array.isArray(teacherIds)
+        ? teacherIds
+        : teacherId
+        ? [teacherId]
+        : [];
+      const cleanTeacherIds = Array.from(
+        new Set(
+          rawTeacherIds
+            .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
+            .map((id: string) => id.toString())
+        )
+      ).map((id) => new mongoose.Types.ObjectId(id));
+
+      const rawStudentIds = Array.isArray(enrolledStudentIds)
+        ? enrolledStudentIds
+        : Array.isArray(studentIds)
+        ? studentIds
+        : [];
+      const cleanStudentIds = Array.from(
+        new Set(
+          rawStudentIds
+            .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
+            .map((id: string) => id.toString())
+        )
+      ).map((id) => new mongoose.Types.ObjectId(id));
+
+      const cleanTeacherSubjects = Array.isArray(teacherSubjects)
+        ? teacherSubjects
+            .filter((ts: any) => ts && ts.teacherId && mongoose.Types.ObjectId.isValid(ts.teacherId))
+            .map((ts: any) => ({
+              teacherId: new mongoose.Types.ObjectId(ts.teacherId),
+              subject: String(ts.subject || "").trim(),
+            }))
+        : [];
 
       const program = await TuitionProgram.create({
         title: title.trim(),
@@ -352,19 +523,16 @@ export const adminEdupyeController = {
           { day: "Wednesday", startTime: "17:00", endTime: "18:30" },
           { day: "Friday", startTime: "17:00", endTime: "18:30" },
         ],
-        teacherIds: Array.isArray(teacherIds)
-          ? teacherIds.filter((id: string) => mongoose.Types.ObjectId.isValid(id)).map((id: string) => new mongoose.Types.ObjectId(id))
-          : [],
-        enrolledStudentIds: Array.isArray(enrolledStudentIds)
-          ? enrolledStudentIds.filter((id: string) => mongoose.Types.ObjectId.isValid(id)).map((id: string) => new mongoose.Types.ObjectId(id))
-          : [],
+        teacherIds: cleanTeacherIds,
+        teacherSubjects: cleanTeacherSubjects,
+        enrolledStudentIds: cleanStudentIds,
         maxCapacity: maxCapacity || 30,
         status: "active",
       });
 
       const populated = await TuitionProgram.findById(program._id)
-        .populate("teacherIds", "name displayName email teacherCode")
-        .populate("enrolledStudentIds", "name displayName email studentCode");
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
 
       res.status(201).json({ success: true, message: "Tuition Program created successfully", program: populated });
     } catch (err: any) {
@@ -379,7 +547,20 @@ export const adminEdupyeController = {
   async updateProgram(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { title, subject, grade, description, schedule, teacherIds, enrolledStudentIds, maxCapacity, status } = req.body;
+      const {
+        title,
+        subject,
+        grade,
+        description,
+        schedule,
+        teacherId,
+        teacherIds,
+        studentIds,
+        enrolledStudentIds,
+        teacherSubjects,
+        maxCapacity,
+        status,
+      } = req.body;
 
       const program = await TuitionProgram.findById(id);
       if (!program) {
@@ -392,26 +573,288 @@ export const adminEdupyeController = {
       if (grade) program.grade = grade.trim();
       if (description !== undefined) program.description = description.trim();
       if (schedule && Array.isArray(schedule)) program.schedule = schedule;
-      if (teacherIds && Array.isArray(teacherIds)) {
-        program.teacherIds = teacherIds
-          .filter((tid: string) => mongoose.Types.ObjectId.isValid(tid))
-          .map((tid: string) => new mongoose.Types.ObjectId(tid));
+
+      if (teacherIds !== undefined || teacherId !== undefined) {
+        const rawTeacherIds = Array.isArray(teacherIds)
+          ? teacherIds
+          : teacherId
+          ? [teacherId]
+          : [];
+        program.teacherIds = Array.from(
+          new Set(
+            rawTeacherIds
+              .filter((tid: string) => mongoose.Types.ObjectId.isValid(tid))
+              .map((tid: string) => tid.toString())
+          )
+        ).map((tid) => new mongoose.Types.ObjectId(tid));
       }
-      if (enrolledStudentIds && Array.isArray(enrolledStudentIds)) {
-        program.enrolledStudentIds = enrolledStudentIds
-          .filter((sid: string) => mongoose.Types.ObjectId.isValid(sid))
-          .map((sid: string) => new mongoose.Types.ObjectId(sid));
+
+      if (enrolledStudentIds !== undefined || studentIds !== undefined) {
+        const rawStudentIds = Array.isArray(enrolledStudentIds)
+          ? enrolledStudentIds
+          : Array.isArray(studentIds)
+          ? studentIds
+          : [];
+        program.enrolledStudentIds = Array.from(
+          new Set(
+            rawStudentIds
+              .filter((sid: string) => mongoose.Types.ObjectId.isValid(sid))
+              .map((sid: string) => sid.toString())
+          )
+        ).map((sid) => new mongoose.Types.ObjectId(sid));
       }
+
+      if (teacherSubjects !== undefined && Array.isArray(teacherSubjects)) {
+        program.teacherSubjects = teacherSubjects
+          .filter((ts: any) => ts && ts.teacherId && mongoose.Types.ObjectId.isValid(ts.teacherId))
+          .map((ts: any) => ({
+            teacherId: new mongoose.Types.ObjectId(ts.teacherId),
+            subject: String(ts.subject || "").trim(),
+          }));
+      }
+
       if (maxCapacity) program.maxCapacity = Number(maxCapacity);
       if (status) program.status = status;
 
       await program.save();
 
       const populated = await TuitionProgram.findById(program._id)
-        .populate("teacherIds", "name displayName email teacherCode")
-        .populate("enrolledStudentIds", "name displayName email studentCode");
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
 
       res.status(200).json({ success: true, message: "Program updated successfully", program: populated });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * POST /api/admin/tuition/programs/:id/teachers
+   * Add teachers to an existing program without affecting memberships in other programs
+   */
+  async assignTeachersToProgram(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { teacherIds, teacherSubjects } = req.body;
+
+      if (!Array.isArray(teacherIds) || teacherIds.length === 0) {
+        res.status(400).json({ success: false, message: "teacherIds array is required." });
+        return;
+      }
+
+      const validTeacherIds = teacherIds
+        .filter((tid: string) => mongoose.Types.ObjectId.isValid(tid))
+        .map((tid: string) => new mongoose.Types.ObjectId(tid));
+
+      const program = await TuitionProgram.findById(id);
+      if (!program) {
+        res.status(404).json({ success: false, message: "Tuition Program not found." });
+        return;
+      }
+
+      // Add to teacherIds using unique sets
+      const existingSet = new Set(program.teacherIds.map((tid) => tid.toString()));
+      validTeacherIds.forEach((vid) => existingSet.add(vid.toString()));
+      program.teacherIds = Array.from(existingSet).map((tid) => new mongoose.Types.ObjectId(tid));
+
+      // Merge teacherSubjects
+      if (Array.isArray(teacherSubjects)) {
+        const currentSubjects = program.teacherSubjects || [];
+        const subjectMap = new Map(currentSubjects.map((ts) => [ts.teacherId.toString(), ts.subject]));
+        teacherSubjects.forEach((ts: any) => {
+          if (ts && ts.teacherId && mongoose.Types.ObjectId.isValid(ts.teacherId)) {
+            subjectMap.set(ts.teacherId.toString(), String(ts.subject || "").trim());
+          }
+        });
+        program.teacherSubjects = Array.from(subjectMap.entries()).map(([tId, subj]) => ({
+          teacherId: new mongoose.Types.ObjectId(tId),
+          subject: subj,
+        }));
+      }
+
+      await program.save();
+
+      const populated = await TuitionProgram.findById(program._id)
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
+
+      res.status(200).json({
+        success: true,
+        message: "Teachers assigned to program successfully.",
+        program: populated,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * DELETE /api/admin/tuition/programs/:id/teachers/:teacherId
+   * Remove a teacher from a program
+   */
+  async removeTeacherFromProgram(req: Request, res: Response): Promise<void> {
+    try {
+      const { id, teacherId } = req.params;
+
+      const program = await TuitionProgram.findById(id);
+      if (!program) {
+        res.status(404).json({ success: false, message: "Tuition Program not found." });
+        return;
+      }
+
+      program.teacherIds = program.teacherIds.filter((tid) => tid.toString() !== teacherId);
+      if (program.teacherSubjects) {
+        program.teacherSubjects = program.teacherSubjects.filter((ts) => ts.teacherId.toString() !== teacherId);
+      }
+
+      await program.save();
+
+      const populated = await TuitionProgram.findById(program._id)
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
+
+      res.status(200).json({
+        success: true,
+        message: "Teacher removed from program successfully.",
+        program: populated,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * POST /api/admin/tuition/programs/:id/students
+   * Enroll students into an existing program without overwriting other program memberships
+   */
+  async enrollStudentsInProgram(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { studentIds, enrolledStudentIds } = req.body;
+
+      const rawIds = Array.isArray(studentIds) ? studentIds : enrolledStudentIds;
+      if (!Array.isArray(rawIds) || rawIds.length === 0) {
+        res.status(400).json({ success: false, message: "studentIds array is required." });
+        return;
+      }
+
+      const validStudentIds = rawIds
+        .filter((sid: string) => mongoose.Types.ObjectId.isValid(sid))
+        .map((sid: string) => new mongoose.Types.ObjectId(sid));
+
+      const program = await TuitionProgram.findById(id);
+      if (!program) {
+        res.status(404).json({ success: false, message: "Tuition Program not found." });
+        return;
+      }
+
+      const existingSet = new Set(program.enrolledStudentIds.map((sid) => sid.toString()));
+      validStudentIds.forEach((vid) => existingSet.add(vid.toString()));
+      program.enrolledStudentIds = Array.from(existingSet).map((sid) => new mongoose.Types.ObjectId(sid));
+
+      await program.save();
+
+      const populated = await TuitionProgram.findById(program._id)
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
+
+      res.status(200).json({
+        success: true,
+        message: "Students enrolled in program successfully.",
+        program: populated,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * DELETE /api/admin/tuition/programs/:id/students/:studentId
+   * Remove a student from a program
+   */
+  async removeStudentFromProgram(req: Request, res: Response): Promise<void> {
+    try {
+      const { id, studentId } = req.params;
+
+      const program = await TuitionProgram.findById(id);
+      if (!program) {
+        res.status(404).json({ success: false, message: "Tuition Program not found." });
+        return;
+      }
+
+      program.enrolledStudentIds = program.enrolledStudentIds.filter((sid) => sid.toString() !== studentId);
+      await program.save();
+
+      const populated = await TuitionProgram.findById(program._id)
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
+
+      res.status(200).json({
+        success: true,
+        message: "Student removed from program successfully.",
+        program: populated,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * PUT /api/admin/tuition/programs/:id/roster
+   * Update full program roster of teachers and students at once
+   */
+  async updateProgramRoster(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { teacherIds, studentIds, enrolledStudentIds, teacherSubjects } = req.body;
+
+      const program = await TuitionProgram.findById(id);
+      if (!program) {
+        res.status(404).json({ success: false, message: "Tuition Program not found." });
+        return;
+      }
+
+      if (Array.isArray(teacherIds)) {
+        program.teacherIds = Array.from(
+          new Set(
+            teacherIds
+              .filter((tid: string) => mongoose.Types.ObjectId.isValid(tid))
+              .map((tid: string) => tid.toString())
+          )
+        ).map((tid) => new mongoose.Types.ObjectId(tid));
+      }
+
+      const rawStudentIds = Array.isArray(studentIds) ? studentIds : enrolledStudentIds;
+      if (Array.isArray(rawStudentIds)) {
+        program.enrolledStudentIds = Array.from(
+          new Set(
+            rawStudentIds
+              .filter((sid: string) => mongoose.Types.ObjectId.isValid(sid))
+              .map((sid: string) => sid.toString())
+          )
+        ).map((sid) => new mongoose.Types.ObjectId(sid));
+      }
+
+      if (Array.isArray(teacherSubjects)) {
+        program.teacherSubjects = teacherSubjects
+          .filter((ts: any) => ts && ts.teacherId && mongoose.Types.ObjectId.isValid(ts.teacherId))
+          .map((ts: any) => ({
+            teacherId: new mongoose.Types.ObjectId(ts.teacherId),
+            subject: String(ts.subject || "").trim(),
+          }));
+      }
+
+      await program.save();
+
+      const populated = await TuitionProgram.findById(program._id)
+        .populate("teacherIds", "name displayName email teacherCode activeRole")
+        .populate("enrolledStudentIds", "name displayName email studentCode activeRole");
+
+      res.status(200).json({
+        success: true,
+        message: "Program roster updated successfully.",
+        program: populated,
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
     }

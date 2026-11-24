@@ -10,7 +10,9 @@ import TuitionMaterial from "../models/TuitionMaterial";
 import TuitionAssessment from "../models/TuitionAssessment";
 import TuitionSession from "../models/TuitionSession";
 import TuitionAttendance from "../models/TuitionAttendance";
+import TuitionProviderProfile from "../models/TuitionProviderProfile";
 import User from "../models/User";
+import { hashPassword } from "../utils/password";
 
 export const getMyProfile = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -440,5 +442,150 @@ export const createAssessment = async (req: Request, res: Response): Promise<voi
     res.status(201).json({ success: true, assessment });
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Public endpoint for prospective tuition tutors to submit an application.
+ * Creates/links a unified User account (teacher role, pending approval) and TuitionProviderProfile.
+ */
+export const applyForTutor = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      fullName,
+      email,
+      phone,
+      password,
+      qualification,
+      subjects,
+      grades,
+      experienceYears,
+      bio,
+      demoLink,
+    } = req.body;
+
+    const trimmedName = (fullName || "").trim();
+    const cleanEmail = (email || "").trim().toLowerCase();
+    const cleanPhone = (phone || "").trim();
+    const cleanPassword = (password || "").trim();
+
+    if (!trimmedName) {
+      res.status(400).json({ success: false, message: "Full Name is required." });
+      return;
+    }
+
+    if (!cleanEmail || !cleanEmail.includes("@") || !cleanEmail.includes(".")) {
+      res.status(400).json({ success: false, message: "A valid email address is required." });
+      return;
+    }
+
+    if (!cleanPhone || cleanPhone.length < 8) {
+      res.status(400).json({ success: false, message: "A valid phone number with country code is required." });
+      return;
+    }
+
+    if (!cleanPassword || cleanPassword.length < 6) {
+      res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+      return;
+    }
+
+    // Check if user already exists
+    let user = await User.findOne({ email: cleanEmail });
+    if (user) {
+      // If user already exists and has an approved or pending tutor application
+      if (user.role === "teacher" || user.userType === "teacher" || user.tuitionApprovalStatus) {
+        res.status(400).json({
+          success: false,
+          message: "An account with this email is already registered. Please log in or check your application status.",
+        });
+        return;
+      }
+      // Upgrade existing non-teacher user
+      user.role = "teacher";
+      user.userType = "teacher";
+      if (!user.roles.includes("teacher")) {
+        user.roles.push("teacher");
+      }
+      user.activeRole = "teacher";
+      user.phone = cleanPhone;
+      user.tuitionApprovalStatus = "pending";
+      await user.save();
+    } else {
+      const hashedPassword = await hashPassword(cleanPassword);
+      user = await User.create({
+        email: cleanEmail,
+        password: hashedPassword,
+        passwordHash: hashedPassword,
+        name: trimmedName,
+        displayName: trimmedName,
+        fullName: trimmedName,
+        phone: cleanPhone,
+        role: "teacher",
+        userType: "teacher",
+        roles: ["teacher"],
+        activeRole: "teacher",
+        tuitionApprovalStatus: "pending",
+      });
+    }
+
+    // Parse subjects & grades into arrays
+    const parsedSubjects = Array.isArray(subjects)
+      ? subjects
+      : typeof subjects === "string" && subjects.trim()
+      ? subjects.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : ["General Tuition"];
+
+    const parsedGrades = Array.isArray(grades)
+      ? grades
+      : typeof grades === "string" && grades.trim()
+      ? grades.split(",").map((g: string) => g.trim()).filter(Boolean)
+      : ["Class 11-12"];
+
+    const qualificationsArray = Array.isArray(qualification)
+      ? qualification
+      : qualification && typeof qualification === "string"
+      ? [qualification.trim()]
+      : [];
+
+    // Create or update TuitionProviderProfile
+    const profile = await TuitionProviderProfile.findOneAndUpdate(
+      { userId: user._id },
+      {
+        userId: user._id,
+        fullName: trimmedName,
+        contactPhone: cleanPhone,
+        qualifications: qualificationsArray,
+        subjects: parsedSubjects,
+        classesTaught: parsedGrades,
+        experienceYears: Number(experienceYears) || 0,
+        bio: (bio || "").trim(),
+        demoLink: (demoLink || "").trim(),
+        verificationStatus: "pending",
+        interviewStatus: "pending_interview",
+        platformTier: "standard",
+        calculatedTier: "standard",
+        isActive: true,
+      },
+      { new: true, upsert: true }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Tuition tutor application submitted successfully! Our team will review your application and schedule an interview.",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+      },
+      profile: {
+        id: profile._id,
+        interviewStatus: profile.interviewStatus,
+        subjects: profile.subjects,
+        classesTaught: profile.classesTaught,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to submit tutor application." });
   }
 };

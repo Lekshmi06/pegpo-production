@@ -7,6 +7,11 @@ export interface IProgramScheduleSlot {
   endTime: string;   // "18:30"
 }
 
+export interface ITeacherSubjectMapping {
+  teacherId: mongoose.Types.ObjectId;
+  subject: string;
+}
+
 export type TuitionProgramStatus =
   | "draft"
   | "upcoming"
@@ -25,6 +30,7 @@ export interface ITuitionProgram extends Document {
   nextSessionTopic?: string;
   schedule: IProgramScheduleSlot[];
   teacherIds: mongoose.Types.ObjectId[];
+  teacherSubjects?: ITeacherSubjectMapping[];
   enrolledStudentIds: mongoose.Types.ObjectId[];
   status: TuitionProgramStatus;
   startDate?: Date;
@@ -94,6 +100,19 @@ const tuitionProgramSchema = new Schema<ITuitionProgram>(
         type: Schema.Types.ObjectId,
         ref: "User",
         index: true,
+      },
+    ],
+    teacherSubjects: [
+      {
+        teacherId: {
+          type: Schema.Types.ObjectId,
+          ref: "User",
+        },
+        subject: {
+          type: String,
+          trim: true,
+          default: "",
+        },
       },
     ],
     enrolledStudentIds: [

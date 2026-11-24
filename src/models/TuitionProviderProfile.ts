@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from "mongoose";
 export type TuitionVerificationStatus = "pending" | "verified" | "rejected" | "needs_info";
 export type TuitionPlatformTier = "standard" | "gold" | "platinum" | "diamond";
 export type TuitionTeachingMode = "online" | "offline" | "hybrid";
+export type TuitionInterviewStatus = "pending_interview" | "interview_scheduled" | "approved" | "rejected";
 
 export interface ITuitionEducation {
   degree: string;
@@ -93,6 +94,11 @@ export interface ITuitionProviderProfile extends Document {
     country?: string;
   };
   supportingDocuments: ITuitionDocument[];
+  contactPhone?: string;
+  demoLink?: string;
+  interviewStatus?: TuitionInterviewStatus;
+  interviewDate?: Date;
+  interviewNotes?: string;
   verificationStatus: TuitionVerificationStatus;
   verificationNotes?: string;
   verifiedAt?: Date;
@@ -210,6 +216,27 @@ const tuitionProviderProfileSchema = new Schema<ITuitionProviderProfile>(
         uploadedAt: { type: Date, default: Date.now },
       },
     ],
+    contactPhone: {
+      type: String,
+      trim: true,
+    },
+    demoLink: {
+      type: String,
+      trim: true,
+    },
+    interviewStatus: {
+      type: String,
+      enum: ["pending_interview", "interview_scheduled", "approved", "rejected"],
+      default: "pending_interview",
+      index: true,
+    },
+    interviewDate: {
+      type: Date,
+    },
+    interviewNotes: {
+      type: String,
+      trim: true,
+    },
     verificationStatus: {
       type: String,
       enum: ["pending", "verified", "rejected", "needs_info"],

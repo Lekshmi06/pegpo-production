@@ -178,6 +178,89 @@ async function runE2ETest() {
     });
     console.log("✓ Test 2 Passed: Student joined exact same canonical room");
 
+    // 4b. Test WebRTC Signalling (Offer, Answer, ICE candidate exchange)
+    console.log("[Test 2b] Testing Bidirectional WebRTC Signalling Handshake (Offer -> Answer -> ICE)...");
+    const teacherReceivedOfferPromise = new Promise<any>((resolve) => {
+      const handler = (raw: any) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "offer") {
+          teacherWs!.off("message", handler);
+          resolve(msg);
+        }
+      };
+      teacherWs!.on("message", handler);
+    });
+
+    const studentReceivedAnswerPromise = new Promise<any>((resolve) => {
+      const handler = (raw: any) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "answer") {
+          studentWs!.off("message", handler);
+          resolve(msg);
+        }
+      };
+      studentWs!.on("message", handler);
+    });
+
+    const teacherReceivedIcePromise = new Promise<any>((resolve) => {
+      const handler = (raw: any) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "ice-candidate") {
+          teacherWs!.off("message", handler);
+          resolve(msg);
+        }
+      };
+      teacherWs!.on("message", handler);
+    });
+
+    // Student sends simulated WebRTC offer to Teacher
+    const mockOfferSdp = { type: "offer", sdp: "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n" };
+    studentWs!.send(
+      JSON.stringify({
+        type: "offer",
+        to: teacher._id.toString(),
+        offer: mockOfferSdp,
+      })
+    );
+
+    const receivedOffer = await teacherReceivedOfferPromise;
+    console.log(`[Teacher WS] Received WebRTC offer from: ${receivedOffer.from} (${receivedOffer.fromName})`);
+    if (receivedOffer.from !== student._id.toString()) {
+      throw new Error("WebRTC offer 'from' ID mismatch");
+    }
+
+    // Teacher sends simulated WebRTC answer back to Student
+    const mockAnswerSdp = { type: "answer", sdp: "v=0\r\no=- 54321 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n" };
+    teacherWs!.send(
+      JSON.stringify({
+        type: "answer",
+        to: student._id.toString(),
+        answer: mockAnswerSdp,
+      })
+    );
+
+    const receivedAnswer = await studentReceivedAnswerPromise;
+    console.log(`[Student WS] Received WebRTC answer from: ${receivedAnswer.from}`);
+    if (receivedAnswer.from !== teacher._id.toString()) {
+      throw new Error("WebRTC answer 'from' ID mismatch");
+    }
+
+    // Student sends simulated ICE candidate to Teacher
+    studentWs!.send(
+      JSON.stringify({
+        type: "ice-candidate",
+        to: teacher._id.toString(),
+        candidate: { candidate: "candidate:1 1 UDP 2130706431 127.0.0.1 5000 typ host", sdpMid: "0", sdpMLineIndex: 0 },
+      })
+    );
+
+    const receivedIce = await teacherReceivedIcePromise;
+    console.log(`[Teacher WS] Received ICE candidate from: ${receivedIce.from}`);
+    if (receivedIce.from !== student._id.toString()) {
+      throw new Error("WebRTC ICE candidate 'from' ID mismatch");
+    }
+    console.log("✓ Test 2b Passed: WebRTC Offer, Answer, and ICE candidates exchanged bidirectionally");
+
     // 5. Test Chat Messaging: Teacher sends chat message
     console.log("[Test 3] Testing Live Chat Message broadcast and 1-year compliance persistence...");
     const chatPromise = new Promise<{ text: string; senderRole: string; senderName: string }>((resolve) => {

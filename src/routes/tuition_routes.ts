@@ -14,15 +14,20 @@ import * as programController from "../controllers/tuition_program_controller";
 import complaintController from "../controllers/complaint_controller";
 import homeworkController from "../controllers/homework_controller";
 import * as assessmentController from "../controllers/live_assessment_controller";
+import tuitionAssessmentController from "../controllers/tuition_assessment_controller";
 import { combinedStudyUpload } from "../config/combined_study_upload";
+import { tuitionMediaUpload, tuitionSubmissionUpload } from "../config/tuition_media_upload";
 import { getStudentSchedule } from "../services/tuition_schedule_service";
 
 const router = Router();
 
 // ==========================================
-// 0. TUITION AUTH & CODE-LOGIN (PUBLIC)
+// 0. TUITION AUTH, APPLICATIONS & CODE-LOGIN (PUBLIC)
 // ==========================================
 router.post("/auth/code-login", programController.codeLogin);
+router.post("/programs/code-login", programController.codeLogin);
+router.post("/code-login", programController.codeLogin);
+router.post("/tutor-apply", providerController.applyForTutor);
 
 // ==========================================
 // 1. PUBLIC MARKETPLACE & REVIEWS (DEPRECATED)
@@ -170,5 +175,29 @@ router.post("/sessions/:sessionId/assessments", authenticateUser, assessmentCont
 router.get("/sessions/:sessionId/assessments", authenticateUser, assessmentController.getSessionAssessments);
 router.post("/assessments/:assessmentId/submit", authenticateUser, assessmentController.submitAssessment);
 router.patch("/assessments/:assessmentId/close", authenticateUser, assessmentController.closeAssessment);
+
+// ==========================================
+// 11. CENTRALIZED TUITION ASSESSMENTS & HOMEWORK (MCQ & PDF)
+// ==========================================
+router.get("/programs/:programId/assessments", authenticateUser, tuitionAssessmentController.getProgramAssessments);
+router.post("/programs/:programId/assessments", authenticateUser, tuitionAssessmentController.createProgramAssessment);
+router.post("/assessments/:assessmentId/submit-mcq", authenticateUser, tuitionAssessmentController.submitMcqTest);
+router.post(
+  "/assessments/:assessmentId/submit-pdf",
+  authenticateUser,
+  tuitionSubmissionUpload.single("file"),
+  tuitionAssessmentController.submitAssignmentPdf
+);
+router.get("/assessments/:assessmentId/submissions", authenticateUser, tuitionAssessmentController.getAssessmentSubmissions);
+
+// ==========================================
+// 12. PERSISTENT STUDY MATERIAL & VOICE NOTE UPLOAD
+// ==========================================
+router.post(
+  "/upload-media",
+  authenticateUser,
+  tuitionMediaUpload.single("file"),
+  tuitionAssessmentController.uploadTuitionMedia
+);
 
 export default router;
