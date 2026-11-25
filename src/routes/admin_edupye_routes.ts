@@ -1,5 +1,6 @@
 import { Router } from "express";
 import adminEdupyeController from "../controllers/admin_edupye_controller";
+import academyController from "../controllers/academy_controller";
 import contentController from "../controllers/content_controller";
 import { authenticateUser, requireTuitionPlatformAdmin } from "../middlewares/auth_middleware";
 
@@ -23,6 +24,7 @@ router.patch("/tuition/teachers/:id/reject", authenticateUser, requireTuitionPla
 
 // Module 33: Tuition Operations Hub - Students
 router.get("/tuition/students", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.getTuitionStudents);
+router.post("/tuition/students", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.createTuitionStudent);
 router.patch("/tuition/students/:id/approve", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.approveStudent);
 
 // Module 33: User Access Controls (Revoke, Restore, Delete)
@@ -51,5 +53,48 @@ router.get("/tuition/recordings", authenticateUser, requireTuitionPlatformAdmin,
 // Module 33: Complaints & Grievance Tickets
 router.get("/tuition/complaints", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.getComplaints);
 router.patch("/tuition/complaints/:id", authenticateUser, requireTuitionPlatformAdmin, adminEdupyeController.updateComplaint);
+
+// ========================================================
+// EduPye Academy: Tuition Fees, Attendance & Dashboard KPIs
+// ========================================================
+router.get("/academy/fees/structures", authenticateUser, requireTuitionPlatformAdmin, academyController.getFeeStructures);
+router.post("/academy/fees/structures", authenticateUser, requireTuitionPlatformAdmin, academyController.createFeeStructure);
+router.get("/academy/fees/payments", authenticateUser, requireTuitionPlatformAdmin, academyController.getFeePayments);
+router.post("/academy/fees/payments", authenticateUser, requireTuitionPlatformAdmin, academyController.collectFeePayment);
+router.post("/academy/fees/collect", authenticateUser, requireTuitionPlatformAdmin, academyController.collectFeePayment);
+router.get("/academy/fees/defaulters", authenticateUser, requireTuitionPlatformAdmin, academyController.getFeeDefaulters);
+router.get("/academy/dashboard-kpis", authenticateUser, requireTuitionPlatformAdmin, academyController.getDashboardKpis);
+
+// EduPye Academy: Attendance (1-on-1 Personal Tuition & 1-to-N Group Batches)
+router.get("/academy/attendance", authenticateUser, requireTuitionPlatformAdmin, academyController.getAttendance);
+router.post("/academy/attendance", authenticateUser, requireTuitionPlatformAdmin, academyController.saveAttendance);
+router.get("/academy/attendance/report", authenticateUser, requireTuitionPlatformAdmin, academyController.getAttendanceReport);
+
+// EduPye Academy: Assessments, Marks & Student Progress
+router.get("/academy/exams/student-progress", authenticateUser, requireTuitionPlatformAdmin, academyController.getStudentProgress);
+router.get("/academy/exams", authenticateUser, requireTuitionPlatformAdmin, academyController.getExams);
+router.post("/academy/exams", authenticateUser, requireTuitionPlatformAdmin, academyController.createExam);
+router.post("/academy/exams/:id/marks", authenticateUser, requireTuitionPlatformAdmin, academyController.saveExamMarks);
+
+// EduPye Academy: Tutor Payroll (Session-based & Retainer)
+router.get("/academy/payroll/calculate", authenticateUser, requireTuitionPlatformAdmin, academyController.calculatePayrollForMonth);
+router.get("/academy/payroll", authenticateUser, requireTuitionPlatformAdmin, academyController.getPayouts);
+router.post("/academy/payroll", authenticateUser, requireTuitionPlatformAdmin, academyController.saveTutorPayout);
+router.patch("/academy/payroll/:id/pay", authenticateUser, requireTuitionPlatformAdmin, academyController.payTutorPayout);
+
+// EduPye Academy: Center Expenses & Finance Summary (P&L)
+router.get("/academy/expenses", authenticateUser, requireTuitionPlatformAdmin, academyController.getExpenses);
+router.post("/academy/expenses", authenticateUser, requireTuitionPlatformAdmin, academyController.createExpense);
+router.get("/academy/finance/summary", authenticateUser, requireTuitionPlatformAdmin, academyController.getFinanceSummary);
+
+// EduPye Academy: Batch & Center Notices
+router.get("/academy/notices", authenticateUser, requireTuitionPlatformAdmin, academyController.getNotices);
+router.post("/academy/notices", authenticateUser, requireTuitionPlatformAdmin, academyController.createNotice);
+router.delete("/academy/notices/:id", authenticateUser, requireTuitionPlatformAdmin, academyController.deleteNotice);
+
+// EduPye Academy: Admission Enquiries / Leads
+router.get("/academy/enquiries", authenticateUser, requireTuitionPlatformAdmin, academyController.getEnquiries);
+router.post("/academy/enquiries", authenticateUser, requireTuitionPlatformAdmin, academyController.createEnquiry);
+router.patch("/academy/enquiries/:id/status", authenticateUser, requireTuitionPlatformAdmin, academyController.updateEnquiryStatus);
 
 export default router;

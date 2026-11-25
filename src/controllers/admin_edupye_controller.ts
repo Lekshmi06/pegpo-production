@@ -365,16 +365,28 @@ export const adminEdupyeController = {
           (enrolledPrograms.length > 0 ? Array.from(new Set(enrolledPrograms.map((p) => p.subject).filter(Boolean))) : null) ||
           ["General Tuition"];
 
+        const notesStr = req?.adminNotes || req?.learningGoals || '';
+        const parentMatch = notesStr.match(/Parent\/Guardian:\s*([^|]+)/);
+        const phoneMatch = notesStr.match(/Phone:\s*([^|]+)/);
+        const parentName = req?.parentDetails?.name || req?.parentName || (parentMatch ? parentMatch[1].trim() : "Guardian / N/A");
+        const parentPhone = req?.parentDetails?.phone || req?.parentPhone || (phoneMatch ? phoneMatch[1].trim() : (s as any).phone || "N/A");
+
         return {
           id: s._id,
           name: s.displayName || s.name || s.username,
           username: s.username,
           email: s.email,
+          phone: (s as any).phone || "",
           role: s.activeRole || s.role,
           studentCode: s.studentCode || null,
           tuitionApprovalStatus: approvalStatus,
           grade,
           subjects,
+          parentName,
+          parentPhone,
+          gender: (s as any).gender || "Not Specified",
+          dob: (s as any).dateOfBirth || null,
+          address: (s as any).address || "",
           enrolledPrograms,
           createdAt: s.createdAt,
         };
@@ -429,6 +441,116 @@ export const adminEdupyeController = {
         tuitionApprovalStatus: user.tuitionApprovalStatus,
         assignedProgram,
         user,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * POST /api/admin/tuition/students
+   * Create a new tuition student admission, issue permanent STU-XXXXXX code, and enroll in program
+   */
+  async createTuitionStudent(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        name,
+        displayName,
+        email,
+        phone,
+        password,
+        grade = "Class 12",
+        parentName,
+        parentPhone,
+        parentEmail,
+        parentRelation = "Parent",
+        gender = "Not Specified",
+        dob,
+        address,
+        programId,
+        feePlan = "Monthly Standard (₹2,500)",
+      } = req.body;
+
+      if (!name || (!email && !phone)) {
+        res.status(400).json({ success: false, message: "Student name and email or phone are required." });
+        return;
+      }
+
+      const studentEmail = email ? email.trim().toLowerCase() : `student_${Date.now()}@edupye.academy`;
+      const baseUsername = (name || "student").toLowerCase().replace(/[^a-z0-9]/g, "") + "_" + Math.floor(1000 + Math.random() * 9000);
+
+      const existingUser = await User.findOne({ email: studentEmail });
+      if (existingUser) {
+        res.status(409).json({ success: false, message: "A user with this email address already exists." });
+        return;
+      }
+
+      const user = new User({
+        name,
+        displayName: displayName || name,
+        username: baseUsername,
+        email: studentEmail,
+        password: password || "Edupye@2026",
+        role: "student",
+        activeRole: "student",
+        userType: "student",
+        roles: ["student"],
+        phone: phone || "",
+        gender,
+        dateOfBirth: dob ? new Date(dob) : undefined,
+        address: address || "",
+        tuitionApprovalStatus: "approved",
+      });
+
+      const studentCode = user.issuePermanentTuitionCode();
+      await user.save();
+
+      let assignedProgram: any = null;
+      if (programId && mongoose.Types.ObjectId.isValid(programId)) {
+        assignedProgram = await TuitionProgram.findById(programId);
+        if (assignedProgram) {
+          const userObjId = user._id as any;
+          if (!assignedProgram.enrolledStudentIds.some((id: any) => id.toString() === userObjId.toString())) {
+            assignedProgram.enrolledStudentIds.push(userObjId);
+            await assignedProgram.save();
+          }
+        }
+      }
+
+      try {
+        await TuitionRequest.create({
+          studentId: user._id,
+          classFormat: "group",
+          teachingMode: "online",
+          subject: assignedProgram ? assignedProgram.subject : "General Tuition",
+          classLevel: grade,
+          curriculum: "CBSE",
+          status: assignedProgram ? "enrolled" : "accepted",
+          adminNotes: `Parent/Guardian: ${parentName || 'N/A'} (${parentRelation || 'Parent'}) | Phone: ${parentPhone || 'N/A'} | Fee Plan: ${feePlan}`,
+          learningGoals: `Tuition Enrollment in ${grade} (${feePlan})`,
+        });
+      } catch (errReq) {
+        // Continue even if tuition request creation encountered non-critical error
+      }
+
+      res.status(201).json({
+        success: true,
+        message: `Student admitted successfully with permanent ID ${studentCode}`,
+        student: {
+          id: user._id,
+          name: user.displayName || user.name,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          studentCode,
+          grade,
+          parentName: parentName || "Guardian / N/A",
+          parentPhone: parentPhone || "N/A",
+          gender,
+          tuitionApprovalStatus: "approved",
+          enrolledPrograms: assignedProgram ? [{ id: assignedProgram._id, title: assignedProgram.title, code: assignedProgram.code, subject: assignedProgram.subject, grade: assignedProgram.grade }] : [],
+          createdAt: user.createdAt,
+        },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });

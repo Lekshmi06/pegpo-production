@@ -238,8 +238,9 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
         switch (type) {
           case "offer": {
-            // Forward WebRTC offer to target peer
-            const targetPeer = room.get(message.to);
+            // Forward WebRTC offer to target peer (with 1-on-1 fallback if message.to is omitted)
+            const targetId = message.to || Array.from(room.keys()).find((id) => id !== userId);
+            const targetPeer = targetId ? room.get(targetId) : undefined;
             if (targetPeer && targetPeer.socket.readyState === WebSocket.OPEN) {
               targetPeer.socket.send(
                 JSON.stringify({
@@ -249,13 +250,16 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                   offer: message.offer,
                 })
               );
+            } else {
+              console.warn(`[Signalling] Offer target peer ${targetId} not reachable in room ${sessionId}`);
             }
             break;
           }
 
           case "answer": {
             // Forward WebRTC answer to target peer
-            const targetPeer = room.get(message.to);
+            const targetId = message.to || Array.from(room.keys()).find((id) => id !== userId);
+            const targetPeer = targetId ? room.get(targetId) : undefined;
             if (targetPeer && targetPeer.socket.readyState === WebSocket.OPEN) {
               targetPeer.socket.send(
                 JSON.stringify({
@@ -264,13 +268,16 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                   answer: message.answer,
                 })
               );
+            } else {
+              console.warn(`[Signalling] Answer target peer ${targetId} not reachable in room ${sessionId}`);
             }
             break;
           }
 
           case "ice-candidate": {
             // Forward ICE candidate to target peer
-            const targetPeer = room.get(message.to);
+            const targetId = message.to || Array.from(room.keys()).find((id) => id !== userId);
+            const targetPeer = targetId ? room.get(targetId) : undefined;
             if (targetPeer && targetPeer.socket.readyState === WebSocket.OPEN) {
               targetPeer.socket.send(
                 JSON.stringify({
