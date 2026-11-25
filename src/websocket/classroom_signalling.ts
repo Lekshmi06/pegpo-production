@@ -321,7 +321,8 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
             break;
           }
 
-          case "chat-message": {
+          case "chat-message":
+          case "chat:message": {
             const hasText = typeof message.text === "string" && Boolean(message.text.trim());
             const hasVoice = Boolean(message.voiceUrl || message.audioUrl);
             const hasAttachment = Boolean(message.attachment && (message.attachment.url || message.attachment.name));
@@ -332,14 +333,14 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                 : hasVoice
                 ? "🎙️ Voice Note"
                 : "📎 Attachment";
-              const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+              const msgId = message.id || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
               const now = new Date();
               const messageType = message.messageType || (hasVoice ? "voice" : hasAttachment ? "attachment" : "text");
               const voiceUrl = message.voiceUrl || message.audioUrl || undefined;
               const voiceDuration = typeof message.voiceDuration === "number" ? message.voiceDuration : undefined;
               const attachment = message.attachment || undefined;
 
-              broadcastToRoom(sessionId, {
+              const chatPayload = {
                 type: "chat-message",
                 id: msgId,
                 senderId: userId,
@@ -351,7 +352,12 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
                 voiceDuration,
                 attachment,
                 timestamp: now.toISOString(),
-              });
+              };
+
+              // Broadcast to all sockets in the room (including sender)
+              broadcastToRoom(sessionId, chatPayload);
+              // Backward/dual compatibility event
+              broadcastToRoom(sessionId, { ...chatPayload, type: "chat:message" });
 
               // Persist chat message to MongoDB LiveClassSession for 1-year compliance audit
               await LiveClassSession.findByIdAndUpdate(sessionId, {
