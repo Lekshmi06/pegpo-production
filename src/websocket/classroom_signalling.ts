@@ -28,6 +28,10 @@ const rooms = new Map<string, Map<string, AuthenticatedPeer>>();
 
 // In-memory real-time SmartBoard whiteboard state: sessionId -> CanvasElement[]
 const roomWhiteboards = new Map<string, any[]>();
+// Room drawing permissions: sessionId -> boolean (default: false, teacher-only)
+const roomBoardPermissions = new Map<string, boolean>();
+// Per-student overrides: sessionId -> Map<studentId, boolean>
+const studentBoardPermissions = new Map<string, Map<string, boolean>>();
 
 export function setupClassroomSignallingServer(server: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
@@ -184,6 +188,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
       console.warn("[Signalling] Error loading room chat history or assessments:", histErr);
     }
 
+    const allowGlobal = roomBoardPermissions.get(sessionId) ?? false;
+    const studentMap = studentBoardPermissions.get(sessionId) || new Map<string, boolean>();
+    const studentPermsObj = Object.fromEntries(studentMap.entries());
+    const myBoardPermission = role === "host" ? true : (studentMap.get(userId) ?? allowGlobal);
+
     ws.send(
       JSON.stringify({
         type: "room-state",
@@ -191,6 +200,9 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
         self: { peerId: userId, name, role },
         peers: existingPeers,
         whiteboardState: currentBoard,
+        allowStudentBoardDraw: allowGlobal,
+        studentBoardPermissions: studentPermsObj,
+        canDrawWhiteboard: myBoardPermission,
         chatHistory: recentChatMessages,
         activeAssessments,
       })
@@ -512,6 +524,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
           case "whiteboard:draw":
           case "whiteboard-draw": {
+            const canUserDraw = role === "host" || (studentBoardPermissions.get(sessionId)?.get(userId) ?? (roomBoardPermissions.get(sessionId) ?? false));
+            if (!canUserDraw) {
+              ws.send(JSON.stringify({ type: "error", message: "Whiteboard drawing permission denied by teacher" }));
+              break;
+            }
             if (message.element) {
               const board = roomWhiteboards.get(sessionId) || [];
               board.push(message.element);
@@ -533,6 +550,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
           case "whiteboard:clear":
           case "whiteboard-clear": {
+            const canUserDraw = role === "host" || (studentBoardPermissions.get(sessionId)?.get(userId) ?? (roomBoardPermissions.get(sessionId) ?? false));
+            if (!canUserDraw) {
+              ws.send(JSON.stringify({ type: "error", message: "Whiteboard clear permission denied by teacher" }));
+              break;
+            }
             roomWhiteboards.set(sessionId, []);
             broadcastToRoom(
               sessionId,
@@ -547,6 +569,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
           case "whiteboard:undo":
           case "whiteboard-undo": {
+            const canUserDraw = role === "host" || (studentBoardPermissions.get(sessionId)?.get(userId) ?? (roomBoardPermissions.get(sessionId) ?? false));
+            if (!canUserDraw) {
+              ws.send(JSON.stringify({ type: "error", message: "Whiteboard undo permission denied by teacher" }));
+              break;
+            }
             if (Array.isArray(message.elements)) {
               roomWhiteboards.set(sessionId, message.elements.slice(0, 2000));
             } else {
@@ -568,6 +595,11 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
 
           case "whiteboard:sync-state":
           case "whiteboard-sync": {
+            const canUserDraw = role === "host" || (studentBoardPermissions.get(sessionId)?.get(userId) ?? (roomBoardPermissions.get(sessionId) ?? false));
+            if (!canUserDraw) {
+              ws.send(JSON.stringify({ type: "error", message: "Whiteboard sync permission denied by teacher" }));
+              break;
+            }
             if (Array.isArray(message.elements)) {
               // Store and relay SmartBoard drawing state to all participants in session
               const safeElements = message.elements.slice(0, 2000);
@@ -596,6 +628,51 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
             break;
           }
 
+          case "whiteboard:request-sync": {
+            const currentBoard = roomWhiteboards.get(sessionId) || [];
+            ws.send(
+              JSON.stringify({
+                type: "whiteboard:sync-state",
+                senderId: "server",
+                elements: currentBoard,
+              })
+            );
+            break;
+          }
+
+          case "whiteboard:set-permission":
+          case "board-permission-changed": {
+            if (role !== "host") {
+              ws.send(JSON.stringify({ type: "error", message: "Only the teacher can change whiteboard draw permissions" }));
+              break;
+            }
+            const { studentId, allowed } = message;
+            let sMap = studentBoardPermissions.get(sessionId);
+            if (!sMap) {
+              sMap = new Map<string, boolean>();
+              studentBoardPermissions.set(sessionId, sMap);
+            }
+
+            if (studentId) {
+              sMap.set(studentId, Boolean(allowed));
+            } else if (typeof allowed === "boolean") {
+              roomBoardPermissions.set(sessionId, allowed);
+            }
+
+            const allowGlobal = roomBoardPermissions.get(sessionId) ?? false;
+            const studentPermsObj = Object.fromEntries(sMap.entries());
+
+            // Broadcast permission update to entire room so all peers update live
+            broadcastToRoom(sessionId, {
+              type: "whiteboard:permission",
+              allowStudentBoardDraw: allowGlobal,
+              studentBoardPermissions: studentPermsObj,
+              targetStudentId: studentId,
+              allowed: Boolean(allowed),
+            });
+            break;
+          }
+
           case "end-session": {
             // Only host can terminate the live session
             if (role === "host") {
@@ -610,6 +687,8 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
               }
               rooms.delete(sessionId);
               roomWhiteboards.delete(sessionId);
+              roomBoardPermissions.delete(sessionId);
+              studentBoardPermissions.delete(sessionId);
             } else {
               ws.send(
                 JSON.stringify({
@@ -672,6 +751,8 @@ async function handlePeerDisconnect(sessionId: string, userId: string) {
     if (room.size === 0) {
       rooms.delete(sessionId);
       roomWhiteboards.delete(sessionId);
+      roomBoardPermissions.delete(sessionId);
+      studentBoardPermissions.delete(sessionId);
     }
   }
 }
@@ -719,6 +800,9 @@ export async function enforceClassroomIdleAutoLogout(
       }
     }
     rooms.delete(sessionId);
+    roomWhiteboards.delete(sessionId);
+    roomBoardPermissions.delete(sessionId);
+    studentBoardPermissions.delete(sessionId);
   }
 
   return { forcedCount };
