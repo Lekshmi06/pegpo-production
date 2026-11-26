@@ -105,6 +105,12 @@ export const createTeacherProfile = async (data: CreateTeacherData) => {
     preferences: data.preferences,
   });
 
+  const isTuition = data.teacherType === "tuition" || Boolean(data.goal?.toLowerCase().includes("tuition"));
+  await User.findByIdAndUpdate(userId, {
+    isTuitionTeacher: isTuition,
+    teachingGoal: data.goal || (isTuition ? "tuition" : "institution"),
+  });
+
   return teacherProfile;
 };
 
@@ -186,10 +192,17 @@ export const updateTeacherProfile = async (
     );
   }
 
-  // Update name and language on User model if provided
+  // Update name, language, and tuition teacher status on User model if provided
   const userUpdates: Record<string, any> = {};
   if (data.name !== undefined && data.name.trim()) userUpdates.name = data.name.trim();
   if (data.language !== undefined) userUpdates.language = data.language;
+  if (data.teacherType !== undefined || data.goal !== undefined) {
+    const isTuition = data.teacherType === "tuition" || Boolean(data.goal?.toLowerCase().includes("tuition"));
+    userUpdates.isTuitionTeacher = isTuition;
+    if (data.goal !== undefined) {
+      userUpdates.teachingGoal = data.goal;
+    }
+  }
 
   if (Object.keys(userUpdates).length > 0) {
     await User.findByIdAndUpdate(

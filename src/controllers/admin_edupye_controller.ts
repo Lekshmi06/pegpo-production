@@ -212,6 +212,8 @@ export const adminEdupyeController = {
 
       const code = user.issuePermanentTuitionCode();
       user.tuitionApprovalStatus = "approved";
+      user.isTuitionTeacher = true;
+      user.teachingGoal = "tuition";
       await user.save();
 
       await TuitionProviderProfile.findOneAndUpdate(
@@ -296,6 +298,8 @@ export const adminEdupyeController = {
       if (status === "approved") {
         code = user.issuePermanentTuitionCode();
         user.tuitionApprovalStatus = "approved";
+        user.isTuitionTeacher = true;
+        user.teachingGoal = "tuition";
       } else {
         user.tuitionApprovalStatus = status;
       }

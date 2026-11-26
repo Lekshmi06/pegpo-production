@@ -940,3 +940,51 @@ export const requireTuitionPlatformAdmin = async (
 
   next();
 };
+
+/**
+ * Guard that ensures a teacher has tuition authorization (is registered as a tuition teacher
+ * or possesses an active TCH-XXXXXX code from EduPye Academy).
+ * If the user is an institution/standard teacher, they are forbidden from modifying or accessing tuition provider resources.
+ */
+export const requireTuitionTeacher = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  const user = req.user;
+  if (!user) {
+    res.status(401).json({ success: false, message: "Authentication required" });
+    return;
+  }
+
+  // Admins are allowed
+  const isAdmin = Boolean(
+    user.adminRole ||
+    user.role === "Admin" ||
+    user.role === "Super Admin" ||
+    (user.activeRole as string) === "admin" ||
+    user.roles?.includes("admin" as any)
+  );
+  if (isAdmin) {
+    return next();
+  }
+
+  const isTuition = Boolean(
+    user.isTuitionTeacher ||
+    user.teachingGoal === "tuition" ||
+    user.activeRole === "tuition_provider" ||
+    user.userType === "tuition_provider" ||
+    (user.teacherCode && user.tuitionApprovalStatus === "approved")
+  );
+
+  const isTeacher = user.userType === "teacher" || user.activeRole === "teacher";
+  if (isTeacher && !isTuition) {
+    res.status(403).json({
+      success: false,
+      message: "Forbidden: Tuition teacher authorization required. Your account is configured as an Institution Teacher.",
+    });
+    return;
+  }
+
+  next();
+};

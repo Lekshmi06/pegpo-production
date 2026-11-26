@@ -14,6 +14,10 @@ export interface RegisterInput {
   password?: string;
   name?: string;
   userType?: UserRole;
+  isTuitionTeacher?: boolean;
+  teachingGoal?: string;
+  teacherType?: string;
+  goal?: string;
 }
 
 export interface LoginInput {
@@ -74,7 +78,35 @@ export function formatUserResponse(user: IUser) {
     roles,
     studentCode: user.studentCode,
     teacherCode: user.teacherCode,
+    isTuitionTeacher: Boolean(
+      user.isTuitionTeacher ||
+      user.teachingGoal === "tuition" ||
+      user.activeRole === "tuition_provider" ||
+      user.userType === "tuition_provider" ||
+      (user.teacherCode && user.tuitionApprovalStatus === "approved")
+    ),
+    teachingGoal: user.teachingGoal || (
+      (user.isTuitionTeacher || user.teachingGoal === "tuition" || user.userType === "tuition_provider")
+        ? "tuition"
+        : "institution"
+    ),
     tuitionApprovalStatus: (() => {
+      const isTuition = Boolean(
+        user.isTuitionTeacher ||
+        user.teachingGoal === "tuition" ||
+        user.activeRole === "tuition_provider" ||
+        user.userType === "tuition_provider"
+      );
+      const isTeacherRole =
+        user.activeRole === "teacher" ||
+        user.userType === "teacher" ||
+        (Array.isArray(user.roles) && user.roles.includes("teacher"));
+
+      // Standard institution teachers have no tuition approval status
+      if (isTeacherRole && !isTuition && !user.teacherCode) {
+        return "none";
+      }
+
       const hasCode = Boolean(user.studentCode || user.teacherCode);
       if (hasCode) {
         return user.tuitionApprovalStatus && user.tuitionApprovalStatus !== "none"
@@ -94,6 +126,12 @@ export function formatUserResponse(user: IUser) {
 
 export function shouldAutoEnrollInDev(user: IUser): boolean {
   if (process.env.AUTO_APPROVE_TUITION_DEV !== "true") return false;
+  const isTuition = Boolean(
+    user.isTuitionTeacher ||
+    user.teachingGoal === "tuition" ||
+    user.activeRole === "tuition_provider" ||
+    user.userType === "tuition_provider"
+  );
   const isStudent =
     user.activeRole === "student" ||
     user.activeRole === "learner" ||
@@ -103,16 +141,8 @@ export function shouldAutoEnrollInDev(user: IUser): boolean {
     user.userType === "personal" ||
     (Array.isArray(user.roles) && user.roles.some((r) => ["student", "learner", "personal"].includes(r)));
 
-  const isTeacher =
-    user.activeRole === "teacher" ||
-    user.activeRole === "tuition_provider" ||
-    user.userType === "teacher" ||
-    user.userType === "tuition_provider" ||
-    (Array.isArray(user.roles) && user.roles.some((r) => ["teacher", "tuition_provider"].includes(r)));
-
   if (isStudent && !user.studentCode) return true;
-  if (isTeacher && !user.teacherCode) return true;
-  if (!user.studentCode && !user.teacherCode) return true;
+  if (isTuition && !user.teacherCode) return true;
   return false;
 }
 
@@ -120,6 +150,23 @@ export async function autoEnrollDemoTuitionProgram(user: IUser): Promise<void> {
   if (process.env.AUTO_APPROVE_TUITION_DEV !== "true") {
     return;
   }
+
+  const isTuition = Boolean(
+    user.isTuitionTeacher ||
+    user.teachingGoal === "tuition" ||
+    user.activeRole === "tuition_provider" ||
+    user.userType === "tuition_provider"
+  );
+  const isTeacher =
+    user.activeRole === "teacher" ||
+    user.userType === "teacher" ||
+    (Array.isArray(user.roles) && user.roles.includes("teacher"));
+
+  // Never auto-issue tuition code or enroll standard institution teachers
+  if (isTeacher && !isTuition) {
+    return;
+  }
+
   user.issuePermanentTuitionCode();
   await user.save();
 
@@ -202,6 +249,13 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
     cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   const targetRole: UserRole = data.userType || "student";
+  const isTuitionReq = Boolean(
+    targetRole === "tuition_provider" ||
+    data.isTuitionTeacher === true ||
+    data.teachingGoal === "tuition" ||
+    data.teacherType === "tuition" ||
+    data.goal?.toLowerCase().includes("tuition")
+  );
 
   let user;
   try {
@@ -213,12 +267,14 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       activeRole: targetRole,
       roles: [targetRole],
       language: "English",
+      isTuitionTeacher: isTuitionReq,
+      teachingGoal: data.teachingGoal || data.goal || (isTuitionReq ? "tuition" : "institution"),
     });
 
-    // Auto-approve tuition and issue permanent code ONLY when dev auto-approve is explicitly enabled
-    if (process.env.AUTO_APPROVE_TUITION_DEV === "true") {
+    // Auto-approve tuition and issue permanent code ONLY when dev auto-approve is explicitly enabled AND user requested tuition
+    if (isTuitionReq && process.env.AUTO_APPROVE_TUITION_DEV === "true") {
       await autoEnrollDemoTuitionProgram(user);
-    } else if (targetRole === "teacher" || targetRole === "tuition_provider") {
+    } else if (isTuitionReq) {
       user.tuitionApprovalStatus = "pending";
       await user.save();
     }
@@ -236,24 +292,26 @@ export const registerUser = async (data: RegisterInput): Promise<AuthResult> => 
       const teacherProfile = await TeacherProfile.create({
         userId: user._id,
         name: resolvedName,
-        teacherType: "institution",
-        goal: "Lesson Planning",
+        teacherType: isTuitionReq ? "tuition" : (data.teacherType === "tuition" ? "tuition" : "institution"),
+        goal: data.goal || (isTuitionReq ? "Tuition Mentoring" : "Lesson Planning"),
       });
 
-      let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
-      if (!tuitionProfile) {
-        tuitionProfile = await TuitionProviderProfile.create({
-          userId: user._id,
-          fullName: resolvedName,
-          headline: "Tuition Faculty & Subject Mentor",
-          verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
-          platformTier: "standard",
-          calculatedTier: "standard",
-          isProvisionalTier: true,
-          isActive: true,
-          subjects: ["General Tuition"],
-          classesTaught: ["All Levels"],
-        });
+      if (isTuitionReq) {
+        let tuitionProfile = await TuitionProviderProfile.findOne({ userId: user._id });
+        if (!tuitionProfile) {
+          tuitionProfile = await TuitionProviderProfile.create({
+            userId: user._id,
+            fullName: resolvedName,
+            headline: "Tuition Faculty & Subject Mentor",
+            verificationStatus: process.env.AUTO_APPROVE_TUITION_DEV === "true" ? "verified" : "pending",
+            platformTier: "standard",
+            calculatedTier: "standard",
+            isProvisionalTier: true,
+            isActive: true,
+            subjects: ["General Tuition"],
+            classesTaught: ["All Levels"],
+          });
+        }
       }
 
       return {

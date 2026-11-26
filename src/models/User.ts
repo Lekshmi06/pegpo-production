@@ -59,6 +59,8 @@ export interface IUser extends Document {
   activeRole: UserRole; // currently active workspace role
   studentCode?: string; // Permanent student code, e.g. STU-A1B2C3
   teacherCode?: string; // Permanent teacher code, e.g. TCH-D4E5F6
+  isTuitionTeacher?: boolean;
+  teachingGoal?: string;
   tuitionApprovalStatus?: "none" | "pending" | "approved" | "rejected" | "revoked" | "suspended";
   issuePermanentTuitionCode(): string;
   language?: string;
@@ -158,6 +160,17 @@ const userSchema = new Schema<IUser>(
       trim: true,
       uppercase: true,
       index: true,
+    },
+
+    isTuitionTeacher: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    teachingGoal: {
+      type: String,
+      trim: true,
     },
 
     tuitionApprovalStatus: {
