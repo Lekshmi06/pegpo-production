@@ -612,7 +612,8 @@ export const getMyDemoSessions = async (req: Request, res: Response): Promise<vo
     };
 
     const demoSessions = await AcademyEnquiry.find(query).sort({ demoScheduledAt: 1, createdAt: -1 });
-    const frontendBase = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+    const defaultFrontend = "https://pegpo-frontend-production.vercel.app";
+    const frontendBase = (process.env.FRONTEND_URL || defaultFrontend).replace(/\/$/, "");
 
     const formattedDemos = demoSessions.map((d: any) => ({
       _id: d._id,

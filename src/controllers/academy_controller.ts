@@ -1515,17 +1515,21 @@ export const academyController = {
         console.warn("Could not pre-provision LiveClassSession for demo room:", sessionErr);
       }
 
-      // Construct frontend join URLs
+      // Construct frontend join URLs - always point to main EduPye platform (never the admin domain)
+      const defaultProductionFrontend = "https://pegpo-frontend-production.vercel.app";
+      let frontendBase = (process.env.FRONTEND_URL || defaultProductionFrontend).trim();
+
       const originHeader = req.headers.origin || req.headers.referer;
-      let frontendBase = process.env.FRONTEND_URL || "http://localhost:5173";
       if (originHeader) {
         try {
           const parsed = new URL(originHeader);
-          // If called from admin on e.g. 5174, prefer frontend client url (e.g. 5173) if configured
-          if (!process.env.FRONTEND_URL && parsed.port === "5174") {
-            frontendBase = `${parsed.protocol}//${parsed.hostname}:5173`;
-          } else if (!process.env.FRONTEND_URL) {
-            frontendBase = parsed.origin;
+          // Only rewrite for local development where admin runs on 5174 and frontend on 5173
+          if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+            if (parsed.port === "5174") {
+              frontendBase = `${parsed.protocol}//${parsed.hostname}:5173`;
+            } else if (!process.env.FRONTEND_URL) {
+              frontendBase = parsed.origin;
+            }
           }
         } catch {
           // fallback
