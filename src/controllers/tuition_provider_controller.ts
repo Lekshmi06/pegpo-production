@@ -11,6 +11,7 @@ import TuitionAssessment from "../models/TuitionAssessment";
 import TuitionSession from "../models/TuitionSession";
 import TuitionAttendance from "../models/TuitionAttendance";
 import TuitionProviderProfile from "../models/TuitionProviderProfile";
+import AcademyEnquiry from "../models/AcademyEnquiry";
 import User from "../models/User";
 import { hashPassword } from "../utils/password";
 
@@ -587,5 +588,51 @@ export const applyForTutor = async (req: Request, res: Response): Promise<void> 
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to submit tutor application." });
+  }
+};
+
+/**
+ * GET /api/tuition/demo-sessions
+ * Protected endpoint for tuition teachers to view their assigned trial demo sessions
+ */
+export const getMyDemoSessions = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ success: false, message: "Unauthorized" });
+      return;
+    }
+
+    const query: any = {
+      $or: [
+        { assignedTutorId: user._id },
+        ...(user.teacherCode ? [{ assignedTutorCode: user.teacherCode }] : []),
+      ],
+      demoRoomId: { $exists: true, $ne: null },
+    };
+
+    const demoSessions = await AcademyEnquiry.find(query).sort({ demoScheduledAt: 1, createdAt: -1 });
+    const frontendBase = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+
+    const formattedDemos = demoSessions.map((d: any) => ({
+      _id: d._id,
+      studentName: d.studentName,
+      parentName: d.parentName,
+      phone: d.phone,
+      grade: d.grade,
+      subject: d.demoSubject || d.subjects?.[0] || "General",
+      demoRoomId: d.demoRoomId,
+      demoScheduledAt: d.demoScheduledAt,
+      demoStatus: d.demoStatus || "scheduled",
+      teacherToken: d.teacherToken,
+      studentToken: d.studentToken,
+      teacherJoinUrl: `${frontendBase}/demo-room/${d.teacherToken}`,
+      studentJoinUrl: `${frontendBase}/demo-room/${d.studentToken}`,
+      notes: d.notes,
+    }));
+
+    res.status(200).json({ success: true, count: formattedDemos.length, demoSessions: formattedDemos });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to load demo sessions" });
   }
 };

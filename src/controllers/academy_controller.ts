@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import AcademyFeeStructure from "../models/AcademyFeeStructure";
 import AcademyFeePayment from "../models/AcademyFeePayment";
 import AcademyAttendance from "../models/AcademyAttendance";
@@ -9,6 +10,7 @@ import AcademyExpense from "../models/AcademyExpense";
 import AcademyNotice from "../models/AcademyNotice";
 import AcademyEnquiry from "../models/AcademyEnquiry";
 import TuitionProgram from "../models/TuitionProgram";
+import LiveClassSession from "../models/LiveClassSession";
 import User from "../models/User";
 
 export const academyController = {
@@ -1427,6 +1429,137 @@ export const academyController = {
       res.status(200).json({ success: true, message: "Enquiry updated successfully", enquiry });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * POST /api/admin/academy/enquiries/:id/schedule-demo OR /api/academy/enquiries/:id/schedule-demo
+   * Assigns tutor, subject, date/time, generates demoRoomId, studentToken, teacherToken,
+   * updates status to 'Demo Scheduled', and creates live meeting room.
+   */
+  async scheduleDemo(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { tutorId, tutorCode, tutorName, subject, scheduledAt, notes } = req.body;
+
+      if (!scheduledAt) {
+        res.status(400).json({ success: false, message: "Scheduled date and time are required" });
+        return;
+      }
+
+      const enquiry = await AcademyEnquiry.findById(id);
+      if (!enquiry) {
+        res.status(404).json({ success: false, message: "Enquiry not found" });
+        return;
+      }
+
+      // Resolve tutor details if tutorId provided
+      let resolvedTutorId = tutorId ? new mongoose.Types.ObjectId(tutorId) : enquiry.assignedTutorId;
+      let resolvedTutorCode = tutorCode || enquiry.assignedTutorCode || "TCH-DEMO";
+      let resolvedTutorName = tutorName || enquiry.assignedTutorName || "Assigned Tutor";
+
+      if (tutorId && mongoose.Types.ObjectId.isValid(tutorId)) {
+        const tutorUser = await User.findById(tutorId);
+        if (tutorUser) {
+          resolvedTutorCode = tutorUser.teacherCode || resolvedTutorCode;
+          resolvedTutorName = tutorUser.name || tutorUser.displayName || resolvedTutorName;
+        }
+      }
+
+      // Generate distinct room ID and tokens
+      const shortId = id.toString().slice(-6).toUpperCase();
+      const randomRoomHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+      const demoRoomId = `demo-${shortId}-${randomRoomHex}`;
+      const studentToken = `dstu_${crypto.randomBytes(16).toString("hex")}`;
+      const teacherToken = `dtch_${crypto.randomBytes(16).toString("hex")}`;
+
+      const demoSubject = subject || enquiry.subjects?.[0] || enquiry.grade || "General";
+      const demoScheduledDate = new Date(scheduledAt);
+
+      enquiry.status = "Demo Scheduled";
+      enquiry.demoRoomId = demoRoomId;
+      enquiry.studentToken = studentToken;
+      enquiry.teacherToken = teacherToken;
+      enquiry.assignedTutorId = resolvedTutorId;
+      enquiry.assignedTutorCode = resolvedTutorCode;
+      enquiry.assignedTutorName = resolvedTutorName;
+      enquiry.demoSubject = demoSubject;
+      enquiry.demoScheduledAt = demoScheduledDate;
+      enquiry.demoStatus = "scheduled";
+
+      if (notes) {
+        enquiry.notes = enquiry.notes ? `${enquiry.notes}\n[Demo Note]: ${notes}` : `[Demo Note]: ${notes}`;
+      }
+
+      await enquiry.save();
+
+      // Ensure LiveClassSession exists for this demo room so WebRTC/SmartBoard stage mounts immediately
+      try {
+        await LiveClassSession.findOneAndUpdate(
+          { title: demoRoomId },
+          {
+            title: demoRoomId,
+            hostId: resolvedTutorId || new mongoose.Types.ObjectId(),
+            hostRole: "teacher",
+            status: "live",
+            sessionType: "smartboard_ad_hoc",
+            tuitionSessionId: enquiry._id,
+            authorizedStudentIds: [],
+            activeParticipants: [],
+            settings: { allowMicrophone: true, allowCamera: true, allowScreenShare: true, allowChat: true },
+            startedAt: new Date(),
+          },
+          { upsert: true, new: true }
+        );
+      } catch (sessionErr) {
+        console.warn("Could not pre-provision LiveClassSession for demo room:", sessionErr);
+      }
+
+      // Construct frontend join URLs
+      const originHeader = req.headers.origin || req.headers.referer;
+      let frontendBase = process.env.FRONTEND_URL || "http://localhost:5173";
+      if (originHeader) {
+        try {
+          const parsed = new URL(originHeader);
+          // If called from admin on e.g. 5174, prefer frontend client url (e.g. 5173) if configured
+          if (!process.env.FRONTEND_URL && parsed.port === "5174") {
+            frontendBase = `${parsed.protocol}//${parsed.hostname}:5173`;
+          } else if (!process.env.FRONTEND_URL) {
+            frontendBase = parsed.origin;
+          }
+        } catch {
+          // fallback
+        }
+      }
+      frontendBase = frontendBase.replace(/\/$/, "");
+
+      const studentJoinUrl = `${frontendBase}/demo-room/${studentToken}`;
+      const teacherJoinUrl = `${frontendBase}/demo-room/${teacherToken}`;
+
+      res.status(200).json({
+        success: true,
+        message: "Demo class scheduled successfully",
+        enquiry,
+        demoDetails: {
+          demoRoomId,
+          studentToken,
+          teacherToken,
+          studentLink: studentJoinUrl,
+          teacherLink: teacherJoinUrl,
+          studentJoinUrl,
+          teacherJoinUrl,
+          assignedTutor: {
+            id: resolvedTutorId,
+            code: resolvedTutorCode,
+            name: resolvedTutorName,
+          },
+          subject: demoSubject,
+          scheduledAt: demoScheduledDate,
+          status: "scheduled",
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || "Failed to schedule demo class" });
     }
   },
 };

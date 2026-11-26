@@ -7,6 +7,7 @@ import TuitionSession from "../models/TuitionSession";
 import TuitionEnrollment from "../models/TuitionEnrollment";
 import TuitionProgram from "../models/TuitionProgram";
 import User from "../models/User";
+import AcademyEnquiry from "../models/AcademyEnquiry";
 import TuitionAttendance from "../models/TuitionAttendance";
 import TeacherPayout from "../models/TeacherPayout";
 import SessionRecording from "../models/SessionRecording";
@@ -207,6 +208,44 @@ export async function verifySessionAccess(
         authorized: false,
         isHost: false,
         error: "Classroom session expired: 15-minute post-session idle limit reached",
+      };
+    }
+  }
+
+  // 0. Check Demo Trial Room
+  if (sessionId.startsWith("demo-")) {
+    const enquiry = await AcademyEnquiry.findOne({ demoRoomId: sessionId });
+    if (enquiry) {
+      let liveSession = await LiveClassSession.findOne({
+        $or: [{ title: sessionId }, { tuitionSessionId: enquiry._id }],
+      });
+      if (!liveSession) {
+        liveSession = await LiveClassSession.create({
+          title: sessionId,
+          hostId: enquiry.assignedTutorId || new mongoose.Types.ObjectId(),
+          hostRole: "teacher",
+          status: "live",
+          sessionType: "smartboard_ad_hoc",
+          tuitionSessionId: enquiry._id,
+          authorizedStudentIds: [],
+          activeParticipants: [],
+          settings: { allowMicrophone: true, allowCamera: true, allowScreenShare: true, allowChat: true },
+          startedAt: new Date(),
+        });
+      }
+
+      const userDoc = mongoose.Types.ObjectId.isValid(userId) ? await User.findById(userId) : null;
+      const isHost = Boolean(
+        userId === enquiry.assignedTutorId?.toString() ||
+        (userDoc?.teacherCode && userDoc.teacherCode === enquiry.assignedTutorCode) ||
+        userDoc?.roles?.includes("teacher" as any) ||
+        userDoc?.userType === "teacher"
+      );
+
+      return {
+        authorized: true,
+        isHost,
+        session: liveSession,
       };
     }
   }

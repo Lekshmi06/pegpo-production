@@ -12,6 +12,7 @@ import {
 } from "../services/live_class_service";
 import LiveClassSession from "../models/LiveClassSession";
 import TuitionLiveAssessment from "../models/TuitionLiveAssessment";
+import AcademyEnquiry from "../models/AcademyEnquiry";
 
 interface AuthenticatedPeer {
   userId: string;
@@ -77,31 +78,74 @@ export function setupClassroomSignallingServer(server: HttpServer): WebSocketSer
         return;
       }
 
-      const sessionPayload = verifySessionToken(token);
-      if (!sessionPayload || !sessionPayload.userId) {
-        socket.write("HTTP/1.1 401 Unauthorized: Invalid or Expired Token\r\n\r\n");
-        socket.destroy();
-        return;
+      let userId = "";
+      let name = "";
+      let role: "host" | "student" = "student";
+      let canonicalSessionId = "";
+
+      // Support Demo Trial Class Direct Tokens
+      if (token.startsWith("dstu_") || token.startsWith("dtch_") || sessionId.startsWith("demo-")) {
+        const enquiry = await AcademyEnquiry.findOne({
+          $or: [
+            { demoRoomId: sessionId },
+            { studentToken: token },
+            { teacherToken: token },
+          ],
+        });
+
+        if (enquiry) {
+          const isTeacher = enquiry.teacherToken === token;
+          role = isTeacher ? "host" : "student";
+          userId = isTeacher
+            ? (enquiry.assignedTutorId?.toString() || `demo-tutor-${enquiry._id.toString().slice(-6)}`)
+            : `demo-student-${enquiry._id.toString().slice(-6)}`;
+          name = isTeacher
+            ? (enquiry.assignedTutorName || "Demo Tutor")
+            : (enquiry.studentName || "Prospective Student");
+
+          const access = await verifySessionAccess(enquiry.demoRoomId || sessionId, userId);
+          if (access.session) {
+            canonicalSessionId = access.session._id.toString();
+          }
+        }
       }
 
-      const userId = sessionPayload.userId;
+      // Standard JWT Session Token verification fallback
+      if (!userId) {
+        const sessionPayload = verifySessionToken(token);
+        if (!sessionPayload || !sessionPayload.userId) {
+          socket.write("HTTP/1.1 401 Unauthorized: Invalid or Expired Token\r\n\r\n");
+          socket.destroy();
+          return;
+        }
 
-      // Verify room authorization
-      const access = await verifySessionAccess(sessionId, userId);
-      if (!access.authorized || !access.session) {
-        socket.write("HTTP/1.1 403 Forbidden: Access Denied to Classroom\r\n\r\n");
-        socket.destroy();
-        return;
+        userId = sessionPayload.userId;
+        name = (sessionPayload as any).name || "";
+
+        // Verify room authorization
+        const access = await verifySessionAccess(sessionId, userId);
+        if (!access.authorized || !access.session) {
+          socket.write("HTTP/1.1 403 Forbidden: Access Denied to Classroom\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+
+        role = access.isHost ? "host" : "student";
+        if (!name) {
+          name = access.isHost ? "Teacher" : "Student";
+        }
+        canonicalSessionId = access.session._id.toString();
       }
 
-      // Canonicalize room ID so program code and direct session ID resolve to the exact same room
-      const canonicalSessionId = access.session._id.toString();
+      if (!canonicalSessionId) {
+        canonicalSessionId = sessionId;
+      }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request, {
           userId,
-          name: (sessionPayload as any).name || (access.isHost ? "Teacher" : "Student"),
-          role: access.isHost ? "host" : "student",
+          name,
+          role,
           sessionId: canonicalSessionId,
         });
       });

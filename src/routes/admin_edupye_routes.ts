@@ -96,5 +96,6 @@ router.delete("/academy/notices/:id", authenticateUser, requireTuitionPlatformAd
 router.get("/academy/enquiries", authenticateUser, requireTuitionPlatformAdmin, academyController.getEnquiries);
 router.post("/academy/enquiries", authenticateUser, requireTuitionPlatformAdmin, academyController.createEnquiry);
 router.patch("/academy/enquiries/:id/status", authenticateUser, requireTuitionPlatformAdmin, academyController.updateEnquiryStatus);
+router.post("/academy/enquiries/:id/schedule-demo", authenticateUser, requireTuitionPlatformAdmin, academyController.scheduleDemo);
 
 export default router;

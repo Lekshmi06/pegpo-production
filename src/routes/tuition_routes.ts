@@ -81,6 +81,7 @@ router.post("/reviews", authenticateUser, reviewController.createReview);
 // ==========================================
 // 4. VERIFIED TUITION PROVIDER STUDIO
 // ==========================================
+router.get("/demo-sessions", authenticateUser, providerController.getMyDemoSessions);
 router.get("/provider/overview", authenticateTuitionProvider, providerController.getDashboardOverview);
 router.get("/provider/financials", authenticateTuitionProvider, providerController.getFinancials);
 router.get("/provider/payouts", authenticateTuitionProvider, providerController.getTeacherPayouts);
