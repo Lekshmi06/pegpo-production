@@ -141,6 +141,7 @@ router.post("/programs", authenticateUser, programController.createTuitionProgra
 router.post("/programs/:programId/request-enrollment", authenticateUser, programController.requestProgramEnrollment);
 router.get("/programs/:programId/roster", authenticateUser, programController.getProgramRoster);
 router.patch("/programs/:programId/overview", authenticateUser, programController.updateProgramOverview);
+router.patch("/programs/:programId/schedule", authenticateUser, programController.updateProgramSchedule);
 router.get("/programs/:programId/recordings", authenticateUser, programController.getProgramRecordings);
 router.get("/teacher/enrolled-students", authenticateUser, programController.getTeacherEnrolledStudents);
 

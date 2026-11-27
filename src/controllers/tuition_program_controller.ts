@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import mongoose from "mongoose";
 import User, { IUser } from "../models/User";
 import TuitionProgram, { ITuitionProgram } from "../models/TuitionProgram";
+import TuitionBatch from "../models/TuitionBatch";
 import TuitionRequest from "../models/TuitionRequest";
 import TuitionProviderProfile from "../models/TuitionProviderProfile";
 import TeacherProfile from "../models/TeacherProfile";
@@ -462,6 +463,124 @@ export async function updateProgramOverview(req: Request, res: Response): Promis
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to update program overview." });
+  }
+}
+
+/**
+ * 3c. PATCH /api/tuition/programs/:programId/schedule
+ * Updates program schedule slots (days, start/end times).
+ * Accessible by assigned teachers or institution administrators.
+ */
+export async function updateProgramSchedule(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = getAuthUserId(req);
+    const programId = getParam(req.params.programId);
+
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(programId)) {
+      res.status(400).json({ success: false, message: "Invalid program ID format." });
+      return;
+    }
+
+    const program = await TuitionProgram.findById(programId);
+    if (!program) {
+      res.status(404).json({ success: false, message: "Tuition program not found." });
+      return;
+    }
+
+    const userIdStr = userId.toString();
+    const isTeacher = program.teacherIds.some((t: any) => t.toString() === userIdStr);
+    const isAdmin = (req.user as any)?.role === "institution" || (req.user as any)?.userType === "institution";
+
+    if (!isTeacher && !isAdmin) {
+      res.status(403).json({
+        success: false,
+        message: "Unauthorized: Only assigned instructors or administrators can update the program schedule.",
+      });
+      return;
+    }
+
+    const { schedule } = req.body;
+
+    if (!Array.isArray(schedule)) {
+      res.status(400).json({
+        success: false,
+        message: "Schedule must be an array of schedule slots.",
+      });
+      return;
+    }
+
+    const VALID_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/; // 24-hr HH:mm format
+
+    const validatedSlots: Array<{ day: string; startTime: string; endTime: string }> = [];
+
+    for (const slot of schedule) {
+      if (!slot || typeof slot !== "object") continue;
+      const rawDay = String(slot.day || "").trim();
+      const day = VALID_DAYS.find((d) => d.toLowerCase() === rawDay.toLowerCase());
+      const startTime = String(slot.startTime || "").trim();
+      const endTime = String(slot.endTime || "").trim();
+
+      if (!day) {
+        res.status(400).json({
+          success: false,
+          message: `Invalid day "${slot.day}". Must be one of Monday through Sunday.`,
+        });
+        return;
+      }
+
+      if (!TIME_REGEX.test(startTime) || !TIME_REGEX.test(endTime)) {
+        res.status(400).json({
+          success: false,
+          message: `Invalid time format for ${day} ("${startTime}" - "${endTime}"). Expected HH:mm (24-hour).`,
+        });
+        return;
+      }
+
+      validatedSlots.push({ day, startTime, endTime });
+    }
+
+    program.schedule = validatedSlots;
+    await program.save();
+
+    // Sync linked TuitionBatch if present
+    try {
+      if (validatedSlots.length > 0) {
+        const batchDays = Array.from(new Set(validatedSlots.map((s) => s.day)));
+        const firstSlot = validatedSlots[0];
+        await TuitionBatch.updateMany(
+          {
+            $or: [
+              { offeringId: program._id },
+              { title: program.title }
+            ]
+          },
+          {
+            $set: {
+              daysOfWeek: batchDays,
+              startTime: firstSlot.startTime,
+              endTime: firstSlot.endTime,
+            }
+          }
+        );
+      }
+    } catch (batchErr) {
+      console.warn("Could not sync linked TuitionBatch schedule:", batchErr);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Program schedule updated successfully.",
+      schedule: program.schedule,
+      program,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to update program schedule." });
   }
 }
 
